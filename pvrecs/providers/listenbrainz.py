@@ -104,8 +104,9 @@ class LBTopTracks(TopTracks):
         if not rows:
             return []
         top_users = rows[0]["total_user_count"] or 0
-        if artist.popularity is None:
-            artist.popularity = log_popularity(top_users, self.full_scale)
+        # authoritative: LB listener counts are keyed by MBID, while Deezer fan counts can come from a split
+        # or namesake profile (Deezer's small "Ye" page vs Kanye's main one), so LB overwrites, never the reverse
+        artist.popularity = log_popularity(top_users, self.full_scale)
         floor = max(5, top_users * self.min_share)  # drop one-off bootlegs nobody plays
         rows = [r for r in rows if (r["total_user_count"] or 0) >= floor][:limit]
         n = len(rows)

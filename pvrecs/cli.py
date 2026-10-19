@@ -27,13 +27,28 @@ def _unit(v: str) -> float:
     return f
 
 
+class _Sub:
+    """add_parser that attaches the shared global flags to every subcommand."""
+
+    def __init__(self, subparsers, common):
+        self.subparsers, self.common = subparsers, common
+
+    def add_parser(self, *args, **kw):
+        return self.subparsers.add_parser(*args, parents=[self.common], **kw)
+
+
 def parser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser(prog="pvrecs", description="Tunable exploration radio + LB created-for playlists")
-    ap.add_argument("--config", help="YAML config (default: $PVRECS_CONFIG or ./config.yaml)")
-    ap.add_argument("--no-token", action="store_true", help="ignore $LISTENBRAINZ_TOKEN (fully tokenless)")
-    ap.add_argument("--offline", action="store_true", help="HTTP cache only, no network")
-    ap.add_argument("--json", action="store_true", help="print full JSON")
-    sub = ap.add_subparsers(dest="cmd", required=True)
+    # global flags work before or after the subcommand: `pvrecs --json radio ...` == `pvrecs radio ... --json`
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--config", default=argparse.SUPPRESS,
+                        help="YAML config (default: $PVRECS_CONFIG or ./config.yaml)")
+    common.add_argument("--no-token", action="store_true", default=argparse.SUPPRESS,
+                        help="ignore $LISTENBRAINZ_TOKEN (fully tokenless)")
+    common.add_argument("--offline", action="store_true", default=argparse.SUPPRESS, help="HTTP cache only")
+    common.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="print full JSON")
+    ap = argparse.ArgumentParser(prog="pvrecs", description="Tunable exploration radio + LB created-for playlists",
+                                 parents=[common])
+    sub = _Sub(ap.add_subparsers(dest="cmd", required=True), common)
 
     r = sub.add_parser("radio", help="generate an exploration radio playlist")
     g = r.add_mutually_exclusive_group(required=True)
@@ -81,6 +96,9 @@ def parser() -> argparse.ArgumentParser:
 
 def main(argv=None):
     a = parser().parse_args(argv)
+    for flag, default in (("config", None), ("no_token", False), ("offline", False), ("json", False)):
+        if not hasattr(a, flag):
+            setattr(a, flag, default)
     load_env(config_mod.ROOT / ".env")
     cfg = config_mod.load(a.config)
     log = (lambda *_: None) if a.json else (lambda m: print(f"# {m}", file=sys.stderr))
