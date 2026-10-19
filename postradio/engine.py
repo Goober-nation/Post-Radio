@@ -153,6 +153,21 @@ class Providers:
     genres: list[GenreSource] = field(default_factory=list)
 
 
+@dataclass
+class Run:
+    """Everything that belongs to one generate() call. Passed explicitly, never stored on Radio, so
+    concurrent requests on one Radio can't see each other's seed, genres, boosts or snapshots."""
+    genres: list[str] = field(default_factory=list)
+    genre_op: str = "or"
+    seed_pop: float | None = None
+    track_boost: dict[str, float] = field(default_factory=dict)
+    history: History | None = None  # one snapshot per run (no per-node version() checks)
+    taste: Taste | None = None
+
+    def boost(self, t: Track) -> float:
+        return self.track_boost.get(t.recording_mbid or "", 0.0) or self.track_boost.get(t.key, 1.0)
+
+
 class Radio:
     def __init__(self, providers: Providers, adv: Advanced | None = None, log: Callable[[str], None] = print):
         self.p, self.log = providers, log
@@ -164,18 +179,24 @@ class Radio:
         self._executor: ThreadPoolExecutor | None = None
         self._pool_lock = threading.Lock()
         self._history_version: object = None
-        self.seed_pop: float | None = None
-        self.track_boost: dict[str, float] = {}
-        self._genre_query: tuple[list[str], str] = ([], "or")
+        self._load_lock = threading.Lock()  # one thread reloads history/taste; others wait, then reuse it
         self._warned_streams: set[str] = set()
+        self.last_run: Run | None = None  # for inspection/debugging only; never read by the engine
 
     def history(self) -> History:
-        version = self.p.history.version()
-        if self._history is None or version != self._history_version:
-            self._history, self._history_version = self.p.history.load(), version
-            if self._history:
-                self.log(f"history: {self._history.summary()}")
-        return self._history
+        with self._load_lock:
+            version = self.p.history.version()
+            if self._history is None or version != self._history_version:
+                try:
+                    loaded = self.p.history.load()
+                except (OSError, ValueError, RuntimeError, KeyError, TypeError) as e:
+                    # a broken history source degrades to "no personalisation", never a failed run
+                    self.log(f"history unavailable: {e}")
+                    loaded = History()
+                self._history, self._history_version = loaded, version
+                if self._history:
+                    self.log(f"history: {self._history.summary()}")
+            return self._history
 
     def _map(self, fn, items: list) -> list:
         """Run independent fetches concurrently (order kept). Per-host limits live in Http, so this
@@ -209,6 +230,10 @@ class Radio:
 
     def taste(self) -> Taste:
         """Merged opinions, reloaded only when some feedback provider's version() changes."""
+        with self._load_lock:
+            return self._taste_locked()
+
+    def _taste_locked(self) -> Taste:
         version = tuple(prov.version() for prov in self.p.feedback)
         if self._taste is None or version != self._taste_version:
             self._taste_version = version
@@ -216,7 +241,7 @@ class Radio:
             for prov in self.p.feedback:
                 try:
                     got = prov.load()
-                except (RuntimeError, OSError, ValueError) as e:  # e.g. Navidrome down: run without it
+                except (RuntimeError, OSError, ValueError, KeyError, TypeError) as e:  # e.g. Navidrome down
                     self.log(f"feedback from {prov.name} unavailable: {e}")
                     continue
                 self.log(f"feedback: {len(got)} opinions from {prov.name}")
@@ -233,13 +258,13 @@ class Radio:
             return self.a.hate_factor ** -score
         return 1.0
 
-    def _track_layer(self) -> dict[str, float]:
+    def _track_layer(self, taste: Taste) -> dict[str, float]:
         """Loved/hated recordings spread to their LB-similar recordings, scaled by similarity."""
         boosts: dict[str, float] = {}
         sim = self.p.track_similarity
         if not sim:
             return boosts
-        opinions = self.taste().strongest(self.a.feedback_track_cap)
+        opinions = taste.strongest(self.a.feedback_track_cap)
         sims = self._map(lambda f: sim.similar(
             Track(f.title or "", Artist(f.artist, mbid=f.artist_mbid), recording_mbid=f.recording_mbid),
             self.a.similar_recordings_limit), opinions)
@@ -250,9 +275,6 @@ class Radio:
                     boosts[k] = boosts.get(k, 1.0) * factor
         lo, hi = self.a.hate_factor, self.a.love_factor
         return {k: min(hi, max(lo, v)) for k, v in boosts.items()}
-
-    def _boost(self, t: Track) -> float:
-        return self.track_boost.get(t.recording_mbid or "", 0.0) or self.track_boost.get(t.key, 1.0)
 
     # ---------- seed ----------
     def resolve(self, artist=None, track=None, artist_mbid=None, recording_mbid=None, genres=None,
@@ -280,7 +302,8 @@ class Radio:
         return a, None
 
     # ---------- graph ----------
-    def build_graph(self, seed: Artist, p: Params) -> Graph:
+    def build_graph(self, seed: Artist, p: Params, run: Run | None = None) -> Graph:
+        run = run or Run()
         a, cap = self.a, self.a.graph_cap
         g = Graph(a.agreement_bonus)
         g.add(seed, 0, 1.0, "seed")
@@ -300,7 +323,7 @@ class Radio:
                 if len(g.nodes) - start >= budget[hop]:
                     break
                 if src.artist.virtual:
-                    new += self._genre_neighbours(g, src, p)
+                    new += self._genre_neighbours(g, src, p, run)
                     continue
                 new += [self._link(g, src, e, hop) for e in edges_by_src[src.artist.key]]
             if hop == 1 and len(g.nodes) - 1 < a.sparse_graph and not seed.virtual:
@@ -310,8 +333,8 @@ class Radio:
         self.log(f"graph: {len(g.nodes)} artists, hops <= {p.max_hops}")
         return g
 
-    def _genre_neighbours(self, g: Graph, seed: Node, p: Params) -> list[Node]:
-        genres, op = self._genre_query
+    def _genre_neighbours(self, g: Graph, seed: Node, p: Params, run: Run) -> list[Node]:
+        genres, op = run.genres, run.genre_op
         out = []
         for prov in self.p.genres:
             missing = prov.unsupported(genres)
@@ -344,10 +367,13 @@ class Radio:
         w = self.a.source_weights["tag"]
         return [g.add(a, 1, w, "tag", seed) for a in artists[: self.a.tag_neighbours]]
 
-    def artist_weight(self, n: Node, p: Params) -> float:
-        w = n.affinity * hop_fit(n.hop, p) * artist_pop_fit(n.artist.popularity, p, self.seed_pop)
-        w *= self.taste_factor(self.taste().artist(n.artist))
-        listens = self.history().plays(n.artist)
+    def artist_weight(self, n: Node, p: Params, run: Run | None = None) -> float:
+        run = run or Run()
+        taste = run.taste if run.taste is not None else self.taste()
+        history = run.history if run.history is not None else self.history()
+        w = n.affinity * hop_fit(n.hop, p) * artist_pop_fit(n.artist.popularity, p, run.seed_pop)
+        w *= self.taste_factor(taste.artist(n.artist))
+        listens = history.plays(n.artist)
         if listens:
             fam = min(1.0, math.log1p(listens) / math.log(self.a.familiarity_saturation))
             w *= 1 - self.a.familiarity_strength * p.explore * fam
@@ -364,15 +390,16 @@ class Radio:
         return out
 
     def candidates(self, g: Graph, seed: Node, p: Params, seed_track: Track | None = None,
-                   rng: random.Random | None = None) -> list[tuple[Track, Node]]:
+                   rng: random.Random | None = None, run: Run | None = None) -> list[tuple[Track, Node]]:
         rng = rng or random.Random()
+        run = run or Run()
         # pass 1: graph-only weight picks a shortlist; fetching their catalogues also fills in artist
         # popularity, which pass 2 folds in (this is what keeps deep exploration off the mainstream)
-        by_weight = sorted(g.nodes.values(), key=lambda n: -self.artist_weight(n, p))
+        by_weight = sorted(g.nodes.values(), key=lambda n: -self.artist_weight(n, p, run))
         shortlist = by_weight[:max(self.a.shortlist_min, p.n)]
         fetched = self._map(lambda n: self._top_tracks(n.artist), shortlist)  # network, in parallel
         catalogue = {n.artist.key: tracks for n, tracks in zip(shortlist, fetched, strict=True)}
-        nodes = sorted(shortlist, key=lambda n: -self.artist_weight(n, p))
+        nodes = sorted(shortlist, key=lambda n: -self.artist_weight(n, p, run))
         nodes = nodes[:max(self.a.candidate_artists_min, p.n // 2)]
         # every candidate is filed under an explicit stream label; caps apply per whole stream at the end
         streams: dict[str, list[tuple[Track, Node]]] = defaultdict(list)
@@ -390,9 +417,8 @@ class Radio:
                 seed_bonus[id(t)] = 1 + self.a.seed_track_boost * w  # applied only if the track survives the cap
                 streams["track-sim"].append((t, tn))
         if seed.artist.virtual:
-            genres, op = self._genre_query
             for prov in self.p.genres:
-                for t in prov.genre_tracks(genres, op, p.pop, self.a.genre_seed_tracks):
+                for t in prov.genre_tracks(run.genres, run.genre_op, p.pop, self.a.genre_seed_tracks):
                     tn = g.node_for(t.artist, 1, self.a.source_weights.get("genre", 0.9), "genre", seed)
                     t.artist = tn.artist
                     streams["lb-tags"].append((t, tn))
@@ -416,7 +442,7 @@ class Radio:
             if name == "track-sim":  # a capped-away similar recording must leave no trace, even via other streams
                 for t, _ in kept:
                     for k in filter(None, (t.recording_mbid, t.key)):
-                        self.track_boost[k] = self.track_boost.get(k, 1.0) * seed_bonus[id(t)]
+                        run.track_boost[k] = run.track_boost.get(k, 1.0) * seed_bonus[id(t)]
             out += kept
         return out
 
@@ -443,23 +469,25 @@ class Radio:
     # ---------- ranking ----------
     def generate(self, p: Params, **seed_args) -> dict:
         rng = random.Random(p.seed)
-        self._genre_query = (seed_args.get("genres") or [], seed_args.get("genre_op") or "or")
+        run = Run(genres=list(seed_args.get("genres") or []), genre_op=seed_args.get("genre_op") or "or")
         seed_artist, seed_track = self.resolve(**seed_args)
         self.log(f"seed: {seed_artist.name} ({seed_artist.mbid})" + (f" / {seed_track.title}" if seed_track else ""))
 
         def personal():  # history + taste don't affect graph building, so they load alongside it
             taste = self.taste()
-            return self.history(), taste, self._track_layer() if taste else {}
+            return self.history(), taste, self._track_layer(taste) if taste else {}
 
         with ThreadPoolExecutor(max_workers=1) as bg:
             pending = bg.submit(personal)
-            g = self.build_graph(seed_artist, p)
+            g = self.build_graph(seed_artist, p, run)
             seed = g.nodes[seed_artist.key]
             if not seed.artist.virtual:
                 self._top_tracks(seed.artist)  # fills seed popularity before anything is weighted
-            history, taste, self.track_boost = pending.result()  # joined before anything is weighted
-        self.seed_pop = seed.artist.popularity
-        cands = self.candidates(g, seed, p, seed_track, random.Random(rng.random()))
+            run.history, run.taste, run.track_boost = pending.result()  # joined before anything is weighted
+        history, taste = run.history, run.taste
+        run.seed_pop = seed.artist.popularity
+        self.last_run = run
+        cands = self.candidates(g, seed, p, seed_track, random.Random(rng.random()), run)
 
         merged: dict[str, tuple[Track, Node]] = {}
         for t, n in cands:
@@ -489,8 +517,8 @@ class Radio:
                 if p.explore >= self.a.heard_skip_explore:
                     continue
                 pen = self.a.heard_penalty
-            s = self.artist_weight(n, p) * pop_fit(t.popularity, p) * pen
-            s *= self.taste_factor(taste.track(t)) * self._boost(t)
+            s = self.artist_weight(n, p, run) * pop_fit(t.popularity, p) * pen
+            s *= self.taste_factor(taste.track(t)) * run.boost(t)
             s *= 1 + self.a.multi_source_bonus * (len(t.sources) - 1)
             s *= 1 - self.a.jitter / 2 + self.a.jitter * rng.random()  # keep repeated runs from being identical
             scored.append((s, t, n))
@@ -503,13 +531,13 @@ class Radio:
             rng.shuffle(b)
         return {
             "seed": {"artist": None if seed_artist.virtual else seed_artist.name, "artist_mbid": seed_artist.mbid,
-                     "track": seed_track.title if seed_track else None, "popularity": self.seed_pop},
-            "genres": self._genre_query[0] or None, "genre_op": self._genre_query[1] if self._genre_query[0] else None,
+                     "track": seed_track.title if seed_track else None, "popularity": run.seed_pop},
+            "genres": run.genres or None, "genre_op": run.genre_op if run.genres else None,
             "explore": p.explore, "popularity": p.popularity, "unheard": p.unheard, "mode": p.radio_mode,
             "mix": {k: v for k, v in p.mix.items() if v < 1} or None,
             "graph_size": len(g.nodes),
             "candidates": len(merged),
-            "tracks": [self._row(s, t, n, g, history, taste, self._boost(t)) for b in bands for (s, t, n) in b],
+            "tracks": [self._row(s, t, n, g, history, taste, run.boost(t)) for b in bands for (s, t, n) in b],
         }
 
     def _select(self, scored, p: Params):

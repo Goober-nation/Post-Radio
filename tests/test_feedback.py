@@ -84,7 +84,7 @@ def test_loved_track_boosts_its_similar_tracks():
     love = StaticFeedback("lb", [Feedback("Gamma", "g", 1.0, "lb", recording_mbid="g1")])
     r = radio([love], FakeSim())
     r.generate(Params(0.5, n=5, seed=1), artist="Seed")
-    assert r.track_boost["b3"] == 1.5
+    assert r.last_run.track_boost["b3"] == 1.5
 
 
 def test_track_seed_injects_similar_recordings():
