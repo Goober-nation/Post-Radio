@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from ..http import Http
 from ..models import Artist, Track
+from . import parse_rows
 
 API = "https://api.listenbrainz.org/1"
 JSPF_PLAYLIST = "https://musicbrainz.org/doc/jspf#playlist"
@@ -29,25 +30,33 @@ class LBCreatedFor:
         """Newest first. The listing changes weekly, so it bypasses the long HTTP cache."""
         d = self.http.get(f"{API}/user/{user}/playlists/createdfor", params={"count": 100}, headers=self.headers,
                           max_age=3600)
-        out = []
-        for item in (d or {}).get("playlists") or []:
+        def convert(item):
             pl = item["playlist"]
-            meta = (pl.get("extension", {}).get(JSPF_PLAYLIST, {}).get("additional_metadata") or {})
+            meta = ((pl.get("extension") or {}).get(JSPF_PLAYLIST) or {}).get("additional_metadata") or {}
             if (meta.get("algorithm_metadata") or {}).get("source_patch") != kind:
-                continue
-            mbid = pl["identifier"].rstrip("/").rsplit("/", 1)[-1]
-            out.append(CreatedPlaylist(kind, pl["date"][:10], pl["title"], mbid, self._tracks(mbid)))
+                return None
+            mbid = _last_segment(pl["identifier"])
+            return (kind, pl["date"][:10], pl.get("title") or "", mbid) if mbid else None
+
+        found = parse_rows((d or {}).get("playlists"), convert)
+        out = [CreatedPlaylist(k, week, title, mbid, self._tracks(mbid)) for k, week, title, mbid in found]
         return sorted(out, key=lambda p: p.week, reverse=True)
 
     def _tracks(self, mbid: str) -> list[Track]:
         d = self.http.get(f"{API}/playlist/{mbid}", headers=self.headers)  # a playlist's body never changes
-        out = []
-        for t in ((d or {}).get("playlist") or {}).get("track") or []:
-            ext = (t.get("extension") or {}).get(JSPF_TRACK, {})
+        def convert(t):
+            if not (t.get("title") and t.get("creator")):
+                return None
+            ext = (t.get("extension") or {}).get(JSPF_TRACK) or {}
             arts = (ext.get("additional_metadata") or {}).get("artists") or []
-            rec = (t.get("identifier") or [""])
-            rec = rec[0] if isinstance(rec, list) else rec
-            artist = Artist(t.get("creator") or "", mbid=arts[0]["artist_mbid"] if arts else None)
-            out.append(Track(t.get("title") or "", artist, recording_mbid=rec.rstrip("/").rsplit("/", 1)[-1] or None,
-                             sources={"lb-created-for"}))
-        return out
+            rec = t.get("identifier") or [""]
+            rec = rec[0] if isinstance(rec, list) and rec else rec
+            artist = Artist(t["creator"], mbid=(arts[0] or {}).get("artist_mbid") if arts else None)
+            return Track(t["title"], artist, recording_mbid=_last_segment(rec) if isinstance(rec, str) else None,
+                         sources={"lb-created-for"})
+
+        return parse_rows(((d or {}).get("playlist") or {}).get("track"), convert)
+
+
+def _last_segment(url: str) -> str | None:
+    return url.rstrip("/").rsplit("/", 1)[-1] or None

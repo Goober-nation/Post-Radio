@@ -1,8 +1,27 @@
 """Provider interfaces. The engine only talks to these; each source lives in its own adapter module."""
 import random
 from abc import ABC, abstractmethod
+from collections.abc import Callable, Iterable
+from typing import TypeVar
 
 from ..models import Artist, Edge, Feedback, History, Track
+
+T = TypeVar("T")
+ROW_ERRORS = (KeyError, TypeError, ValueError, AttributeError, IndexError)
+
+
+def parse_rows(rows: Iterable | None, convert: Callable[[dict], T | None]) -> list[T]:
+    """Convert API rows one by one, skipping any that are malformed (missing/null fields, wrong types).
+    Real-world payloads are messy; one bad row must never cost the rest of the response."""
+    out = []
+    for row in rows if isinstance(rows, list | tuple) else []:
+        try:
+            item = convert(row)
+        except ROW_ERRORS:
+            continue
+        if item is not None:
+            out.append(item)
+    return out
 
 
 class ArtistResolver(ABC):

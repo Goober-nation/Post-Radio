@@ -5,7 +5,7 @@ from collections.abc import Callable
 
 from ..http import Http
 from ..models import Artist, Edge, Track, log_popularity, norm
-from . import GenreSource, RadioSource, SimilarArtists, TopTracks
+from . import GenreSource, RadioSource, SimilarArtists, TopTracks, parse_rows
 
 API = "https://api.deezer.com"
 FANS_FULL_SCALE = 6.9  # log10 fans of a superstar (Radiohead ~4M -> ~0.95)
@@ -33,9 +33,9 @@ class Deezer(SimilarArtists, TopTracks, RadioSource, GenreSource):
     # ---- identity ----
     def _candidates(self, name: str) -> list[Artist]:
         d = self.http.get(f"{API}/search/artist", params={"q": name, "limit": 10})
-        rows = [a for a in (d or {}).get("data") or [] if norm(a["name"]) == norm(name)]
+        rows = parse_rows((d or {}).get("data"), lambda a: a if norm(a["name"]) == norm(name) else None)
         rows.sort(key=lambda a: -(a.get("nb_fan") or 0))
-        return [self._artist(a) for a in rows]
+        return parse_rows(rows, self._artist)
 
     def resolve(self, artist: Artist) -> int | None:
         """Find (and cache on the artist) its Deezer id; 0 means looked up and not found/ambiguous.
@@ -81,8 +81,8 @@ class Deezer(SimilarArtists, TopTracks, RadioSource, GenreSource):
         """Track and album titles: albums overlap far better with MB release groups for big catalogues."""
         d = self.http.get(f"{API}/artist/{did}/top", params={"limit": 100})
         out = set()
-        for t in (d or {}).get("data") or []:
-            out.add(norm(t["title_short"] or t["title"]))
+        for t in parse_rows((d or {}).get("data"), lambda t: t if isinstance(t, dict) else None):
+            out.add(norm(t.get("title_short") or t.get("title") or ""))
             out.add(norm((t.get("album") or {}).get("title") or ""))
         out.discard("")
         return out
@@ -93,41 +93,40 @@ class Deezer(SimilarArtists, TopTracks, RadioSource, GenreSource):
         if not did:
             return []
         d = self.http.get(f"{API}/artist/{did}/related", params={"limit": limit})
-        rows = (d or {}).get("data") or []
-        return [Edge(self._artist(a), 1 - 0.5 * i / max(1, len(rows)), self.name) for i, a in enumerate(rows)]
+        rows = parse_rows((d or {}).get("data"), self._artist)
+        return [Edge(a, 1 - 0.5 * i / max(1, len(rows)), self.name) for i, a in enumerate(rows)]
 
     def top_tracks(self, artist: Artist, limit: int = 100) -> list[Track]:
         did = artist.deezer_id if artist.deezer_id else self.resolve(artist)
         if not did:
             return []
         d = self.http.get(f"{API}/artist/{did}/top", params={"limit": limit})
-        rows = (d or {}).get("data") or []
+        rows = parse_rows((d or {}).get("data"), lambda t: t if t.get("id") is not None and _title(t) else None)
         # Deezer /top includes features; keep the artist's own tracks, rank by position
-        own = [t for t in rows if t["artist"]["id"] == did] or rows
+        own = [t for t in rows if (t.get("artist") or {}).get("id") == did] or rows
         n = len(own)
-        return [Track(t["title_short"] or t["title"], artist, deezer_id=t["id"],
-                      popularity=1 - i / max(1, n - 1), sources={"deezer-top"}) for i, t in enumerate(own)]
+        return [Track(_title(t), artist, deezer_id=t["id"], popularity=1 - i / max(1, n - 1), sources={"deezer-top"})
+                for i, t in enumerate(own)]
 
     def radio(self, artist: Artist, popularity: float, mode: str, rng=None) -> list[Track]:
         did = self.resolve(artist)
         if not did:
             return []
         d = self.http.get(f"{API}/artist/{did}/radio", params={"limit": 50})
-        out = []
-        for t in (d or {}).get("data") or []:
+        def convert(t):
             a = Artist(t["artist"]["name"], deezer_id=t["artist"]["id"])
             pop = min(1.0, (t.get("rank") or 0) / self.rank_full_scale)  # no catalogue context: global estimate
-            out.append(Track(t["title_short"] or t["title"], a, deezer_id=t["id"], popularity=pop,
-                             sources={"deezer-radio"}))
-        return out
+            return Track(_title(t), a, deezer_id=t["id"], popularity=pop, sources={"deezer-radio"})
+
+        return parse_rows((d or {}).get("data"), convert)
 
     def _genre_ids(self) -> tuple[dict[str, int], list[str]]:
         """alias -> genre id, plus display names. 'Rap/Hip Hop' is reachable as rap, hiphop or raphiphop."""
         d = self.http.get(f"{API}/genre")
         ids: dict[str, int] = {}
         names = []
-        for gn in (d or {}).get("data") or []:
-            if gn["id"]:  # 0 = "All"
+        for gn in parse_rows((d or {}).get("data"), lambda g: g if g["id"] and g["name"] else None):  # 0 = "All"
+            if gn["id"]:
                 names.append(gn["name"])
                 for alias in [gn["name"], *gn["name"].split("/")]:
                     ids.setdefault(norm(alias), gn["id"])
@@ -149,7 +148,7 @@ class Deezer(SimilarArtists, TopTracks, RadioSource, GenreSource):
         for gname in genres:
             if gid := ids.get(norm(gname)):
                 rows = (self.http.get(f"{API}/genre/{gid}/artists") or {}).get("data") or []
-                per_genre.append([self._artist(a) for a in rows])
+                per_genre.append(parse_rows(rows, self._artist))
         if not per_genre:
             return []
         if op == "and":
@@ -165,3 +164,10 @@ class Deezer(SimilarArtists, TopTracks, RadioSource, GenreSource):
         fans = a.get("nb_fan")
         return Artist(a["name"], deezer_id=a["id"],
                       popularity=log_popularity(fans, self.fans_full_scale) if fans is not None else None)
+
+
+def _title(t: dict) -> str:
+    title = t.get("title_short") or t.get("title")
+    if not title:
+        raise KeyError("title")
+    return title

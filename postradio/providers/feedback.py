@@ -7,7 +7,7 @@ from ..brand import SUBSONIC_CLIENT
 from ..config import Advanced
 from ..http import Http
 from ..models import Feedback, rating_score
-from . import FeedbackProvider, time_bucket
+from . import FeedbackProvider, parse_rows, time_bucket
 
 LB_API = "https://api.listenbrainz.org/1"
 
@@ -41,16 +41,17 @@ class LBFeedback(FeedbackProvider):
                 for page in pool.map(lambda off, score=score: self._page(score, off), offsets):
                     got += [(score, f) for f in page.get("feedback") or []]
             rows += got
-        out = []
-        for score, f in rows:
+        def convert(row):
+            score, f = row
             m = f.get("track_metadata") or {}
             mapping = m.get("mbid_mapping") or {}
             if not (m.get("artist_name") and m.get("track_name")):
-                continue
-            out.append(Feedback(m["artist_name"], m["track_name"], float(score), self.name,
-                                artist_mbid=(mapping.get("artist_mbids") or [None])[0],
-                                recording_mbid=f.get("recording_mbid") or mapping.get("recording_mbid")))
-        return out
+                return None
+            return Feedback(m["artist_name"], m["track_name"], float(score), self.name,
+                            artist_mbid=(mapping.get("artist_mbids") or [None])[0],
+                            recording_mbid=f.get("recording_mbid") or mapping.get("recording_mbid"))
+
+        return parse_rows(rows, convert)
 
 
 class NavidromeFeedback(FeedbackProvider):
@@ -86,33 +87,42 @@ class NavidromeFeedback(FeedbackProvider):
             if f.score and (key not in out or abs(f.score) > abs(out[key].score)):
                 out[key] = f
 
-        def song(s: dict):
-            score = rating_score(s["userRating"]) if s.get("userRating") else 1.0 if s.get("starred") else 0.0
-            put(Feedback(s.get("artist") or "", s.get("title") or "", score, self.name,
-                         recording_mbid=s.get("musicBrainzId") or None), ("s", s.get("id")))
+        def song(s: dict) -> None:
+            if not (s.get("artist") and s.get("title")):
+                return None
+            score = rating_score(int(s["userRating"])) if s.get("userRating") else 1.0 if s.get("starred") else 0.0
+            put(Feedback(s["artist"], s["title"], score, self.name, recording_mbid=s.get("musicBrainzId") or None),
+                ("s", s.get("id")))
 
+        def starred_artist(a: dict) -> None:
+            if a["name"]:
+                put(Feedback(a["name"], None, 1.0, self.name, artist_mbid=a.get("musicBrainzId") or None),
+                    ("a", a.get("id")))
+
+        def starred_album(al: dict) -> None:
+            if al.get("artist"):
+                put(Feedback(al["artist"], None, 0.5, self.name), ("al", al.get("id")))
+
+        def rated_artist(a: dict) -> None:
+            if a.get("userRating") and a["name"]:
+                put(Feedback(a["name"], None, rating_score(int(a["userRating"])), self.name,
+                             artist_mbid=a.get("musicBrainzId") or None), ("a", a.get("id")))
+
+        # every row goes through parse_rows: a malformed entry is skipped, never fatal
         starred = self._call("getStarred2").get("starred2") or {}
-        for s in starred.get("song") or []:
-            song(s)
-        for a in starred.get("artist") or []:
-            put(Feedback(a["name"], None, 1.0, self.name, artist_mbid=a.get("musicBrainzId") or None), ("a", a["id"]))
-        for al in starred.get("album") or []:
-            put(Feedback(al.get("artist") or "", None, 0.5, self.name), ("al", al["id"]))
+        parse_rows(starred.get("song"), song)
+        parse_rows(starred.get("artist"), starred_artist)
+        parse_rows(starred.get("album"), starred_album)
         # ratings aren't listable directly: walk the library (paged, cached for max_age)
         for off in range(0, self.max_songs, self.page):
             res = self._call("search3", query="", songCount=self.page, songOffset=off, artistCount=0, albumCount=0)
             songs = (res.get("searchResult3") or {}).get("song") or []
-            for s in songs:
-                if s.get("userRating") or s.get("starred"):
-                    song(s)
+            parse_rows(songs, lambda s: song(s) if s.get("userRating") or s.get("starred") else None)
             if len(songs) < self.page:
                 break
         res = self._call("getArtists")
-        for idx in (res.get("artists") or {}).get("index") or []:
-            for a in idx.get("artist") or []:
-                if a.get("userRating"):
-                    put(Feedback(a["name"], None, rating_score(a["userRating"]), self.name,
-                                 artist_mbid=a.get("musicBrainzId") or None), ("a", a["id"]))
+        for idx in parse_rows((res.get("artists") or {}).get("index"), lambda i: i):
+            parse_rows(idx.get("artist") if isinstance(idx, dict) else None, rated_artist)
         return list(out.values())
 
 

@@ -6,7 +6,7 @@ from troi.plist import plist
 
 from ..http import Http
 from ..models import Artist, Edge, Track, log_popularity, norm
-from . import GenreSource, RadioSource, SimilarArtists, TagRadio, TopTracks, TrackSimilarity
+from . import GenreSource, RadioSource, SimilarArtists, TagRadio, TopTracks, TrackSimilarity, parse_rows
 
 API = "https://api.listenbrainz.org/1"
 LABS = "https://labs.api.listenbrainz.org"
@@ -33,13 +33,13 @@ class LBMetadata:
         out: dict[str, Track] = {}
         for i in range(0, len(mbids), 100):
             d = self.http.post(f"{API}/metadata/recording/", {"recording_mbids": mbids[i:i + 100], "inc": "artist"},
-                               headers=self.headers) or {}
-            for mbid, m in d.items():
-                title = (m.get("recording") or {}).get("name")
-                arts = (m.get("artist") or {}).get("artists") or []
-                if title and arts:
-                    out[mbid] = Track(title, Artist(arts[0]["name"], mbid=arts[0].get("artist_mbid")),
-                                      recording_mbid=mbid)
+                               headers=self.headers)
+            for mbid, m in (d.items() if isinstance(d, dict) else []):
+                t = parse_rows([m], lambda m, mbid=mbid: Track(m["recording"]["name"], Artist(
+                    m["artist"]["artists"][0]["name"], mbid=m["artist"]["artists"][0].get("artist_mbid")),
+                    recording_mbid=mbid) if m["recording"]["name"] and m["artist"]["artists"][0]["name"] else None)
+                if t:
+                    out[mbid] = t[0]
         return out
 
 
@@ -53,10 +53,10 @@ class LBSimilar(SimilarArtists):
         if not artist.mbid:
             return []
         d = self.http.post(f"{LABS}/similar-artists/json", [{"artist_mbids": [artist.mbid], "algorithm": SIMILAR_ALGO}])
-        rows = [a for a in (d or []) if a.get("artist_mbid") and a["artist_mbid"] != artist.mbid][:limit]
-        top = max((float(a["score"]) for a in rows), default=1.0) or 1.0
-        return [Edge(Artist(a["name"], mbid=a["artist_mbid"]), 0.5 + 0.5 * float(a["score"]) / top, self.name)
-                for a in rows]
+        rows = parse_rows(d, lambda a: (a["artist_mbid"], a["name"], float(a.get("score") or 0))
+                          if a["artist_mbid"] and a["name"] and a["artist_mbid"] != artist.mbid else None)[:limit]
+        top = max((sc for *_, sc in rows), default=1.0) or 1.0
+        return [Edge(Artist(name, mbid=mbid), 0.5 + 0.5 * sc / top, self.name) for mbid, name, sc in rows]
 
 
 class LBSimilarRecordings(TrackSimilarity):
@@ -70,8 +70,8 @@ class LBSimilarRecordings(TrackSimilarity):
             return []
         d = self.http.post(f"{LABS}/similar-recordings/json",
                            [{"recording_mbids": [track.recording_mbid], "algorithm": SIMILAR_REC_ALGO}])
-        rows = [r for r in (d or []) if r.get("recording_mbid") and r["recording_mbid"] != track.recording_mbid]
-        rows = rows[:limit]
+        rows = parse_rows(d, lambda r: r if r["recording_mbid"] and r["recording_mbid"] != track.recording_mbid
+                          and r["recording_name"] and r["artist_credit_name"] else None)[:limit]
         top = max((float(r.get("score") or 0) for r in rows), default=1.0) or 1.0
         out = []
         for r in rows:
@@ -93,7 +93,7 @@ class LBTopTracks(TopTracks):
     def _rows(self, mbid: str) -> list[dict]:
         rows = self.http.get(f"{API}/popularity/top-recordings-for-artist/{mbid}", headers=self.headers,
                              shape=_trim_top)
-        return rows if isinstance(rows, list) else []
+        return parse_rows(rows, lambda r: r if r["recording_mbid"] and r["recording_name"] else None)
 
     def titles(self, artist: Artist) -> set[str]:
         """Normalised titles of the artist's recordings. Read-only: never touches the Artist."""
@@ -103,12 +103,12 @@ class LBTopTracks(TopTracks):
         rows = self._rows(artist.mbid) if artist.mbid else []
         if not rows:
             return []
-        top_users = rows[0]["total_user_count"] or 0
+        top_users = rows[0].get("total_user_count") or 0
         # authoritative: LB listener counts are keyed by MBID, while Deezer fan counts can come from a split
         # or namesake profile (Deezer's small "Ye" page vs Kanye's main one), so LB overwrites, never the reverse
         artist.popularity = log_popularity(top_users, self.full_scale)
         floor = max(5, top_users * self.min_share)  # drop one-off bootlegs nobody plays
-        rows = [r for r in rows if (r["total_user_count"] or 0) >= floor][:limit]
+        rows = [r for r in rows if (r.get("total_user_count") or 0) >= floor][:limit]
         n = len(rows)
         return [Track(r["recording_name"], artist, recording_mbid=r["recording_mbid"],
                       popularity=1 - i / max(1, n - 1), sources={"lb"}) for i, r in enumerate(rows)]
@@ -139,10 +139,10 @@ class TroiRadio(RadioSource):
             return []
         picked: dict[str, list[str]] = {}
         for amb, rows in d.items():
-            picked[amb] = _troi_pick([r["recording_mbid"] for r in rows if r.get("recording_mbid")], lo, hi,
+            picked[amb] = _troi_pick(parse_rows(rows, lambda r: r["recording_mbid"]), lo, hi,
                                      self.per_artist, rng or random.Random())
         meta = self.meta.recordings([m for ms in picked.values() for m in ms])
-        names = {amb: rows[0].get("similar_artist_name") for amb, rows in d.items() if rows}
+        names = {amb: (parse_rows(rows, lambda r: r["similar_artist_name"]) or [None])[0] for amb, rows in d.items()}
         out = []
         for amb, mbids in picked.items():
             for m in mbids:
@@ -182,7 +182,8 @@ class TroiTagRadio(TagRadio, GenreSource):
             "tag": [t.lower() for t in tags], "operator": op, "pop_begin": lo, "pop_end": hi, "count": limit})
         if not isinstance(d, list):
             return []
-        return [(r["recording_mbid"], 1 - float(r.get("percent") or 50) / 100) for r in d if r.get("recording_mbid")]
+        return parse_rows(d, lambda r: (r["recording_mbid"], 1 - float(r.get("percent") or 50) / 100)
+                          if r["recording_mbid"] else None)
 
     def artists_for_tags(self, tags: list[str], popularity: float, limit: int) -> list[Artist]:
         return self.genre_artists(tags, "or", popularity, limit)

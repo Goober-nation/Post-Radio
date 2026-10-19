@@ -2,11 +2,12 @@
 import csv
 import json
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
 from pathlib import Path
 
 from ..http import Http
 from ..models import History, Play
-from . import HistoryProvider, time_bucket
+from . import HistoryProvider, parse_rows, time_bucket
 
 LB_API = "https://api.listenbrainz.org/1"
 
@@ -41,10 +42,13 @@ class ListenBrainzHistory(HistoryProvider):
 
     def load(self) -> History:
         artists = []
-        for a in self._pages("artists", self.max_artists):
-            mbids = a.get("artist_mbids") or ([a["artist_mbid"]] if a.get("artist_mbid") else [None])
-            artists += [(a["artist_name"], m, a["listen_count"]) for m in mbids]
-        tracks = [(r["artist_name"], r["track_name"]) for r in self._pages("recordings", self.max_tracks)]
+        for rows in parse_rows(self._pages("artists", self.max_artists), lambda a: [
+                (a["artist_name"], m, int(a.get("listen_count") or 0))
+                for m in (a.get("artist_mbids") or ([a["artist_mbid"]] if a.get("artist_mbid") else [None]))]
+                if a["artist_name"] else None):
+            artists += rows
+        tracks = parse_rows(self._pages("recordings", self.max_tracks), lambda r: (r["artist_name"], r["track_name"])
+                            if r["artist_name"] and r["track_name"] else None)
         return History.from_counts(artists, tracks)
 
 
@@ -71,6 +75,21 @@ class FileHistory(HistoryProvider):
             for r in rows:
                 title = r.get("title") or r.get("track")
                 if r.get("artist") and title:
-                    ts = r.get("timestamp")
-                    yield Play(r["artist"], title, int(ts) if ts else None, r.get("artist_mbid") or None,
+                    yield Play(r["artist"], title, _timestamp(r.get("timestamp")), r.get("artist_mbid") or None,
                                r.get("recording_mbid") or None)
+
+
+def _timestamp(value) -> int | None:
+    """Unix seconds from an int/float/numeric string or an ISO-8601 date ('2026-10-20T12:00:00Z'); else None.
+    Exports from Maloja, Last.fm, multi-scrobbler disagree on the format, and a bad one must not sink the file."""
+    if value in (None, ""):
+        return None
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        pass
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return int((dt if dt.tzinfo else dt.replace(tzinfo=UTC)).timestamp())

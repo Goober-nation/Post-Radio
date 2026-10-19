@@ -198,13 +198,26 @@ class Radio:
                     self.log(f"history: {self._history.summary()}")
             return self._history
 
+    def _safe(self, fn, *args, default=None, what: str = ""):
+        """Call a provider; on any error log it and return `default` (an empty result). One broken source
+        or malformed payload costs that source's contribution, never the whole run."""
+        try:
+            return fn(*args)
+        except Exception as e:  # noqa: BLE001 - provider boundary: anything a third-party API throws
+            owner = getattr(getattr(fn, "__self__", None), "name", None) or type(getattr(fn, "__self__", fn)).__name__
+            self.log(f"{what or owner}: skipped after {type(e).__name__}: {e}")
+            return [] if default is None else default
+
     def _map(self, fn, items: list) -> list:
-        """Run independent fetches concurrently (order kept). Per-host limits live in Http, so this
-        only overlaps network latency; it never raises the request rate past what each API allows."""
+        """Run independent fetches concurrently (order kept), each isolated by _safe. Per-host limits live
+        in Http, so this only overlaps network latency; it never raises the request rate past the APIs' limits."""
+        def job(x):
+            return self._safe(fn, x, what=getattr(fn, "__name__", "fetch"))
+
         if len(items) <= 1 or getattr(_worker, "in_pool", False):
             # already inside a pooled job: run inline, since resubmitting could deadlock a saturated pool
-            return [fn(x) for x in items]
-        return list(self._pool().map(fn, items))
+            return [job(x) for x in items]
+        return list(self._pool().map(job, items))
 
     def _pool(self) -> ThreadPoolExecutor:
         """One pool per Radio, shared by graph building and the background taste load, so at most
@@ -337,13 +350,13 @@ class Radio:
         genres, op = run.genres, run.genre_op
         out = []
         for prov in self.p.genres:
-            missing = prov.unsupported(genres)
+            missing = self._safe(prov.unsupported, genres)
             if missing:
-                known = prov.supported_genres()
+                known = self._safe(prov.supported_genres, default=[])
                 effect = "skipped (and)" if op == "and" else f"no artists for {missing}"
                 self.log(f"genre: {prov.name} doesn't know {missing}: {effect}"
                          + (f"; it supports: {', '.join(known)}" if known else ""))
-            found = prov.genre_artists(genres, op, p.pop, self.a.genre_seed_artists)
+            found = self._safe(prov.genre_artists, genres, op, p.pop, self.a.genre_seed_artists)
             for i, ar in enumerate(found):
                 w = self.a.source_weights.get("genre", 0.9) * (1 - 0.5 * i / max(1, len(found)))
                 out.append(g.add(ar, 1, w, "genre", seed))
@@ -358,10 +371,10 @@ class Radio:
         """Sparse seed: borrow neighbours from artists sharing its tags (tag radio)."""
         if not (self.p.tagger and self.p.tag_radio):
             return []
-        tags = self.p.tagger.tags(seed.artist)
+        tags = self._safe(self.p.tagger.tags, seed.artist)
         if not tags:
             return []
-        found = self.p.tag_radio.artists_for_tags(tags, p.pop, self.a.tag_radio_recordings)
+        found = self._safe(self.p.tag_radio.artists_for_tags, tags, p.pop, self.a.tag_radio_recordings)
         artists = [a for a in found if a.key != seed.artist.key]
         self.log(f"sparse seed: {len(artists)} tag neighbours from {tags}")
         w = self.a.source_weights["tag"]
@@ -385,7 +398,7 @@ class Radio:
             return []
         out = []
         for prov in self.p.tracks:
-            tracks = prov.top_tracks(artist, self.a.top_tracks_limit)
+            tracks = self._safe(prov.top_tracks, artist, self.a.top_tracks_limit)
             out += [t for t in tracks if not self.junk.search(t.title)]
         return out
 
@@ -408,7 +421,7 @@ class Radio:
             for t in catalogue[n.artist.key]:
                 streams[next(iter(t.sources), "")].append((t, n))  # catalogue tracks carry one source each
         if seed_track and self.p.track_similarity:
-            for t, w in self.p.track_similarity.similar(seed_track, self.a.seed_track_similar_limit):
+            for t, w in self._safe(self.p.track_similarity.similar, seed_track, self.a.seed_track_similar_limit):
                 hop = 0 if t.artist.key == seed.artist.key else 1
                 tn = g.node_for(t.artist, hop, self.a.seed_track_affinity * w, "track-sim", seed)
                 t.artist = tn.artist
@@ -418,7 +431,7 @@ class Radio:
                 streams["track-sim"].append((t, tn))
         if seed.artist.virtual:
             for prov in self.p.genres:
-                for t in prov.genre_tracks(run.genres, run.genre_op, p.pop, self.a.genre_seed_tracks):
+                for t in self._safe(prov.genre_tracks, run.genres, run.genre_op, p.pop, self.a.genre_seed_tracks):
                     tn = g.node_for(t.artist, 1, self.a.source_weights.get("genre", 0.9), "genre", seed)
                     t.artist = tn.artist
                     streams["lb-tags"].append((t, tn))
@@ -475,7 +488,7 @@ class Radio:
 
         def personal():  # history + taste don't affect graph building, so they load alongside it
             taste = self.taste()
-            return self.history(), taste, self._track_layer(taste) if taste else {}
+            return self.history(), taste, self._safe(self._track_layer, taste, default={}) if taste else {}
 
         with ThreadPoolExecutor(max_workers=1) as bg:
             pending = bg.submit(personal)
