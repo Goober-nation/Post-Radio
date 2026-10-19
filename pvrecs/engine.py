@@ -151,13 +151,16 @@ class Radio:
         self.junk = re.compile(self.a.junk_title_pattern, re.IGNORECASE)
         self._history: History | None = None
         self._taste: Taste | None = None
+        self._taste_version: tuple = ()
+        self._history_version: object = None
         self.seed_pop: float | None = None
         self.track_boost: dict[str, float] = {}
         self._genre_query: tuple[list[str], str] = ([], "or")
 
     def history(self) -> History:
-        if self._history is None:
-            self._history = self.p.history.load()
+        version = self.p.history.version()
+        if self._history is None or version != self._history_version:
+            self._history, self._history_version = self.p.history.load(), version
             if self._history:
                 self.log(f"history: {self._history.summary()}")
         return self._history
@@ -171,7 +174,10 @@ class Radio:
             return list(pool.map(fn, items))
 
     def taste(self) -> Taste:
-        if self._taste is None:
+        """Merged opinions, reloaded only when some feedback provider's version() changes."""
+        version = tuple(prov.version() for prov in self.p.feedback)
+        if self._taste is None or version != self._taste_version:
+            self._taste_version = version
             items = []
             for prov in self.p.feedback:
                 try:
@@ -274,6 +280,12 @@ class Radio:
         genres, op = self._genre_query
         out = []
         for prov in self.p.genres:
+            missing = prov.unsupported(genres)
+            if missing:
+                known = prov.supported_genres()
+                effect = "skipped (and)" if op == "and" else f"no artists for {missing}"
+                self.log(f"genre: {prov.name} doesn't know {missing}: {effect}"
+                         + (f"; it supports: {', '.join(known)}" if known else ""))
             found = prov.genre_artists(genres, op, p.pop, self.a.genre_seed_artists)
             for i, ar in enumerate(found):
                 w = self.a.source_weights.get("genre", 0.9) * (1 - 0.5 * i / max(1, len(found)))
@@ -317,8 +329,9 @@ class Radio:
             out += [t for t in tracks if not self.junk.search(t.title)]
         return out
 
-    def candidates(self, g: Graph, seed: Node, p: Params,
-                   seed_track: Track | None = None) -> list[tuple[Track, Node]]:
+    def candidates(self, g: Graph, seed: Node, p: Params, seed_track: Track | None = None,
+                   rng: random.Random | None = None) -> list[tuple[Track, Node]]:
+        rng = rng or random.Random()
         # pass 1: graph-only weight picks a shortlist; fetching their catalogues also fills in artist
         # popularity, which pass 2 folds in (this is what keeps deep exploration off the mainstream)
         by_weight = sorted(g.nodes.values(), key=lambda n: -self.artist_weight(n, p))
@@ -350,7 +363,10 @@ class Radio:
         radio_seeds = [] if seed.artist.virtual else [seed]
         jobs = [(n, prov) for n in radio_seeds + [n for n in nodes if n.hop == 1][: self.a.radio_neighbours]
                 for prov in self.p.radios]
-        streams = self._map(lambda job: job[1].radio(job[0].artist, p.pop, p.radio_mode), jobs)
+        # one RNG per stream, derived from the run seed: reproducible regardless of thread timing
+        seeds = [rng.random() for _ in jobs]
+        streams = self._map(lambda ij: ij[1][1].radio(ij[1][0].artist, p.pop, p.radio_mode,
+                                                      random.Random(seeds[ij[0]])), list(enumerate(jobs)))
         for (n, _), tracks in zip(jobs, streams, strict=True):
             for t in tracks:
                 hop = 0 if t.artist.key == seed.artist.key else n.hop + 1
@@ -378,7 +394,7 @@ class Radio:
                 self._top_tracks(seed.artist)  # fills seed popularity before anything is weighted
             history, taste, self.track_boost = pending.result()  # joined before anything is weighted
         self.seed_pop = seed.artist.popularity
-        cands = self.candidates(g, seed, p, seed_track)
+        cands = self.candidates(g, seed, p, seed_track, random.Random(rng.random()))
 
         merged: dict[str, tuple[Track, Node]] = {}
         for t, n in cands:

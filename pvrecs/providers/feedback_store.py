@@ -39,8 +39,11 @@ class JsonFeedbackStore(FeedbackProvider):
         batch = {"batch": uuid.uuid4().hex[:10], "imported_at": stamp}
         lines = "".join(json.dumps({**batch, **r}, ensure_ascii=False) + "\n" for r in rows)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self._lock, self.path.open("a", encoding="utf-8") as f:  # one append per batch
-            f.write(lines)
+        with self._lock:
+            with self.path.open("a", encoding="utf-8") as f:  # one append per batch
+                f.write(lines)
+            with self.index_path.open("a", encoding="utf-8") as f:  # tiny per-batch index for batches()
+                f.write(json.dumps({**batch, "items": len(rows)}) + "\n")
         counts = {f"{side}_{k}": sum(1 for r in rows if r["score"] == (1 if side == "loves" else -1) and r["kind"] == k)
                   for side in ("loves", "hates") for k in KINDS}
         return {**batch, "items": len(rows), **{k: v for k, v in counts.items() if v}}
@@ -69,15 +72,34 @@ class JsonFeedbackStore(FeedbackProvider):
                            "recording_mbid": item.get("recording_mbid")}
 
     # ---------------------------------------------------------------- read
-    def _latest(self) -> list[dict]:
-        if not self.path.exists():
+    @property
+    def index_path(self) -> Path:
+        return self.path.with_name(self.path.stem + ".batches.jsonl")
+
+    def version(self) -> object:
+        st = self.path.stat() if self.path.exists() else None
+        return (st.st_size, st.st_mtime_ns) if st else None
+
+    def _tail(self, n: int, block: int = 64 * 1024) -> list[str]:
+        """Last n lines, reading backwards in blocks: cost scales with depth, not with log size."""
+        if not self.path.exists() or n <= 0:
             return []
-        lines = self.path.read_text(encoding="utf-8").splitlines()
+        with self.path.open("rb") as f:
+            f.seek(0, 2)
+            pos, buf = f.tell(), b""
+            while pos > 0 and buf.count(b"\n") <= n:
+                step = min(block, pos)
+                pos -= step
+                f.seek(pos)
+                buf = f.read(step) + buf
+        return buf.decode("utf-8", errors="replace").splitlines()[-n:]
+
+    def _latest(self) -> list[dict]:
         newest: dict[tuple, dict] = {}
-        for line in reversed(lines[-self.depth:]):
+        for line in reversed(self._tail(self.depth)):
             try:
                 r = json.loads(line)
-            except json.JSONDecodeError:
+            except json.JSONDecodeError:  # e.g. a partial first line from the block boundary
                 continue
             newest.setdefault((r["kind"], norm(r["artist"]), norm(r.get("title") or "")), r)
         return list(newest.values())
@@ -94,15 +116,13 @@ class JsonFeedbackStore(FeedbackProvider):
         return out
 
     def batches(self) -> list[dict]:
-        """Every batch ever imported (oldest first) with its date and size."""
-        if not self.path.exists():
+        """Every batch ever imported (oldest first) with its date and size, from the small index file."""
+        if not self.index_path.exists():
             return []
-        seen: dict[str, dict] = {}
-        for line in self.path.read_text(encoding="utf-8").splitlines():
+        out = []
+        for line in self.index_path.read_text(encoding="utf-8").splitlines():
             try:
-                r = json.loads(line)
+                out.append(json.loads(line))
             except json.JSONDecodeError:
                 continue
-            b = seen.setdefault(r["batch"], {"batch": r["batch"], "imported_at": r["imported_at"], "items": 0})
-            b["items"] += 1
-        return list(seen.values())
+        return out

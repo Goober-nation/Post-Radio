@@ -83,6 +83,7 @@ class Advanced:
     tag_radio_recordings: int = 60
     genre_seed_artists: int = 30  # genre seeds: hop-1 artists per genre source
     genre_seed_tracks: int = 100  # genre seeds: tagged recordings injected as candidates
+    genre_recordings_per_artist: int = 3  # tag search fetches limit * this recordings to find `limit` artists
     # candidates
     shortlist_min: int = 40
     candidate_artists_min: int = 18

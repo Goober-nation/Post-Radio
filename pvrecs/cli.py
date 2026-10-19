@@ -43,8 +43,8 @@ def parser() -> argparse.ArgumentParser:
     g.add_argument("--recording-mbid")
     g.add_argument("--genre", help="genre seed; comma-separate several (e.g. 'shoegaze,dream pop')")
     r.add_argument("--genre-op", choices=["or", "and"], default="or", help="several genres: any (or) / all (and)")
-    r.add_argument("--unheard", choices=["tracks", "artists"],
-                   help="drop tracks you've played; 'artists' also drops every artist you've played")
+    r.add_argument("--unheard", choices=["none", "tracks", "artists"],
+                   help="tracks: drop played tracks; artists: also drop known artists; none: off (overrides config)")
     r.add_argument("-e", "--explore", type=_unit, help="0 = close, 1 = ~3 hops out")
     r.add_argument("-p", "--popularity", type=_unit, help="0 = deep cuts/small artists, 1 = hits")
     r.add_argument("--auto-popularity", action="store_true", help="ignore configured popularity; follow explore")

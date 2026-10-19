@@ -78,7 +78,7 @@ class Deezer(SimilarArtists, TopTracks, RadioSource, GenreSource):
         return [Track(t["title_short"] or t["title"], artist, deezer_id=t["id"],
                       popularity=1 - i / max(1, n - 1), sources={"deezer-top"}) for i, t in enumerate(own)]
 
-    def radio(self, artist: Artist, popularity: float, mode: str) -> list[Track]:
+    def radio(self, artist: Artist, popularity: float, mode: str, rng=None) -> list[Track]:
         did = self.resolve(artist)
         if not did:
             return []
@@ -91,22 +91,36 @@ class Deezer(SimilarArtists, TopTracks, RadioSource, GenreSource):
                              sources={"deezer-radio"}))
         return out
 
-    def genre_artists(self, genres: list[str], op: str, popularity: float, limit: int) -> list[Artist]:
-        """Deezer only has ~25 broad genres (Rock, Rap/Hip Hop, ...); niche genres simply match nothing.
-        'and' keeps artists listed under every requested genre."""
+    def _genre_ids(self) -> tuple[dict[str, int], list[str]]:
+        """alias -> genre id, plus display names. 'Rap/Hip Hop' is reachable as rap, hiphop or raphiphop."""
         d = self.http.get(f"{API}/genre")
         ids: dict[str, int] = {}
+        names = []
         for gn in (d or {}).get("data") or []:
             if gn["id"]:  # 0 = "All"
-                for alias in [gn["name"], *gn["name"].split("/")]:  # "Rap/Hip Hop" -> rap, hiphop
+                names.append(gn["name"])
+                for alias in [gn["name"], *gn["name"].split("/")]:
                     ids.setdefault(norm(alias), gn["id"])
+        return ids, names
+
+    def supported_genres(self) -> list[str] | None:
+        return self._genre_ids()[1]
+
+    def unsupported(self, genres: list[str]) -> list[str]:
+        ids = self._genre_ids()[0]
+        return [g for g in genres if norm(g) not in ids]
+
+    def genre_artists(self, genres: list[str], op: str, popularity: float, limit: int) -> list[Artist]:
+        """Deezer has ~25 broad genres; with op 'and', one unknown genre means no Deezer artists."""
+        ids = self._genre_ids()[0]
+        if op == "and" and self.unsupported(genres):
+            return []
         per_genre = []
         for gname in genres:
-            gid = ids.get(norm(gname))
-            if gid:
+            if gid := ids.get(norm(gname)):
                 rows = (self.http.get(f"{API}/genre/{gid}/artists") or {}).get("data") or []
                 per_genre.append([self._artist(a) for a in rows])
-        if not per_genre or (op == "and" and len(per_genre) < len(genres)):
+        if not per_genre:
             return []
         if op == "and":
             keys = set.intersection(*({a.key for a in arts} for arts in per_genre))

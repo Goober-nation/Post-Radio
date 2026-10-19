@@ -1,5 +1,7 @@
 """ListenBrainz. Similarity, troi LB-radio and tag radio work tokenless; the popularity
 (top-recordings) endpoint needs a token, so LBTopTracks is only wired in when one is set."""
+import random
+
 from troi.plist import plist
 
 from ..http import Http
@@ -119,7 +121,7 @@ class TroiRadio(RadioSource):
         self.meta = LBMetadata(http, token)
         self.window, self.per_artist, self.similar_artists = window, per_artist, similar_artists
 
-    def radio(self, artist: Artist, popularity: float, mode: str) -> list[Track]:
+    def radio(self, artist: Artist, popularity: float, mode: str, rng: random.Random | None = None) -> list[Track]:
         if not artist.mbid or mode not in self.MODES:
             return []
         lo, hi = troi_window(popularity, self.window)
@@ -130,9 +132,8 @@ class TroiRadio(RadioSource):
             return []
         picked: dict[str, list[str]] = {}
         for amb, rows in d.items():
-            pool = plist([r["recording_mbid"] for r in rows if r.get("recording_mbid")])
-            chosen = pool.random_item(lo, hi, self.per_artist) if pool else []
-            picked[amb] = chosen if isinstance(chosen, list) else [chosen]
+            picked[amb] = _troi_pick([r["recording_mbid"] for r in rows if r.get("recording_mbid")], lo, hi,
+                                     self.per_artist, rng or random.Random())
         meta = self.meta.recordings([m for ms in picked.values() for m in ms])
         names = {amb: rows[0].get("similar_artist_name") for amb, rows in d.items() if rows}
         out = []
@@ -146,16 +147,26 @@ class TroiRadio(RadioSource):
         return out
 
 
+def _troi_pick(mbids: list[str], lo: int, hi: int, count: int, rng: random.Random) -> list[str]:
+    """troi's plist.random_item (slice by popularity percentile, then sample) with an injectable RNG,
+    so --rng-seed reproduces it; the percentile maths is troi's own."""
+    pool = plist(mbids)
+    if not pool:
+        return []
+    window = list(pool)[pool._get_index(lo):pool._get_index(hi)]  # plist overrides __getitem__; slice a list
+    return rng.sample(window, min(count, len(window)))
+
+
 class TroiTagRadio(TagRadio, GenreSource):
     """LB-radio tag search (troi's tag element endpoint), through our Http layer. Serves both the
     sparse-seed tag fallback and genre seeds."""
 
     name = "lb-tags"
 
-    def __init__(self, http: Http, token: str | None = None, window: int = 34):
+    def __init__(self, http: Http, token: str | None = None, window: int = 34, recordings_per_artist: int = 3):
         self.http, self.headers = http, _headers(token)
         self.meta = LBMetadata(http, token)
-        self.window = window
+        self.window, self.recordings_per_artist = window, recordings_per_artist
 
     def _search(self, tags: list[str], op: str, popularity: float, limit: int) -> list[tuple[str, float]]:
         """(recording mbid, popularity 0..1) — LB's 'percent' is a popularity percentile, 0 = most played."""
@@ -182,7 +193,8 @@ class TroiTagRadio(TagRadio, GenreSource):
 
     def genre_artists(self, genres: list[str], op: str, popularity: float, limit: int) -> list[Artist]:
         seen: dict[str, Artist] = {}
-        for t in self.genre_tracks(genres, op, popularity, limit * 3):
+        # tagged recordings come several per artist, so ask for enough to find `limit` distinct artists
+        for t in self.genre_tracks(genres, op, popularity, limit * self.recordings_per_artist):
             seen.setdefault(t.artist.key, t.artist)
         return list(seen.values())[:limit]
 

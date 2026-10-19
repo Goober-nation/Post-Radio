@@ -106,7 +106,7 @@ class Recommender:
                 raise ValueError("sources.history = file needs sources.history_file")
             return FileHistory(self.cfg.path(s.history_file))
         if s.history == "lb" and self.lb_user:
-            return ListenBrainzHistory(self.http, self.lb_user, self.token)
+            return ListenBrainzHistory(self.http, self.lb_user, self.token, refresh_s=self.cfg.storage.http_ttl_s)
         return NoHistory()
 
     def _feedback_from_config(self) -> list[FeedbackProvider]:
@@ -148,7 +148,7 @@ class Recommender:
         dz = Deezer(http, known_titles=known_titles, fans_full_scale=a.deezer_fans_full_scale,
                     rank_full_scale=a.deezer_rank_full_scale)
         tracks = [dz] + ([lb_top] if lb_top else [])  # LB's popularity endpoint is the only one needing a token
-        tags = TroiTagRadio(http, token, a.troi_window_width)
+        tags = TroiTagRadio(http, token, a.troi_window_width, a.genre_recordings_per_artist)
         return Providers(resolver=mb, similar=[LBSimilar(http), dz, mb], tracks=tracks,
                          radios=[dz, TroiRadio(http, token, a.troi_window_width)], tagger=mb, tag_radio=tags,
                          history=self.history, feedback=self.feedback, track_similarity=LBSimilarRecordings(http),
@@ -165,9 +165,7 @@ class Recommender:
         d = self.cfg.defaults
         pop = popularity if popularity is not None else (None if auto_popularity else d.popularity)
         p = Params(explore=d.explore if explore is None else explore, n=n or d.n, per_artist=per_artist or d.per_artist,
-                   seed=rng_seed, popularity=pop, unheard=unheard or d.unheard, adv=self.cfg.advanced)
-        if p.unheard not in (None, "tracks", "artists"):
-            raise ValueError("unheard must be 'tracks' or 'artists'")
+                   seed=rng_seed, popularity=pop, unheard=self._unheard(unheard), adv=self.cfg.advanced)
         for name, v in (("explore", p.explore), ("popularity", p.popularity)):
             if v is not None and not 0 <= v <= 1:
                 raise ValueError(f"{name} must be in [0, 1]")
@@ -176,6 +174,15 @@ class Recommender:
         res = self.radio.generate(p, artist=artist, track=track, artist_mbid=artist_mbid,
                                   recording_mbid=recording_mbid, genres=genres, genre_op=genre_op)
         return self._remember("radio", res, default_name=self._radio_name(res))
+
+    def _unheard(self, value: str | None) -> str | None:
+        """None = config default; "none" switches it off for this run even if the config sets it."""
+        v = self.cfg.defaults.unheard if value is None else value
+        if v in (None, "none"):
+            return None
+        if v not in ("tracks", "artists"):
+            raise ValueError("unheard must be 'none', 'tracks' or 'artists'")
+        return v
 
     @staticmethod
     def _radio_name(res: dict) -> str:
@@ -203,9 +210,7 @@ class Recommender:
     # ------------------------------------------------------------------ feedback store
     def import_feedback(self, data: dict) -> dict:
         """Append a batch of loves/hates (see providers/feedback_store.py for the format); dated, newest wins."""
-        summary = self.feedback_store.import_batch(data)
-        self.radio._taste = None  # pick it up on the next generate()
-        return summary
+        return self.feedback_store.import_batch(data)  # the store's version() changes -> engine reloads taste
 
     def feedback_batches(self) -> list[dict]:
         return self.feedback_store.batches()

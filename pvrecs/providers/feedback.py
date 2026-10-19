@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from ..config import Advanced
 from ..http import Http
 from ..models import Feedback, rating_score
-from . import FeedbackProvider
+from . import FeedbackProvider, time_bucket
 
 LB_API = "https://api.listenbrainz.org/1"
 
@@ -20,6 +20,9 @@ class LBFeedback(FeedbackProvider):
                  max_age_s: int = Advanced.feedback_max_age_s, cap: int = 2000):
         self.http, self.user, self.max_age, self.cap = http, user, max_age_s, cap
         self.headers = {"Authorization": f"Token {token}"} if token else None
+
+    def version(self) -> object:
+        return time_bucket(self.max_age)
 
     def _page(self, score: int, off: int) -> dict:
         return self.http.get(f"{LB_API}/feedback/user/{self.user}/get-feedback",
@@ -59,6 +62,9 @@ class NavidromeFeedback(FeedbackProvider):
                  max_age_s: int = Advanced.feedback_max_age_s, page: int = 500, max_songs: int = 200_000):
         self.http, self.url, self.user, self.password = http, url.rstrip("/"), user, password
         self.max_age, self.page, self.max_songs = max_age_s, page, max_songs
+
+    def version(self) -> object:
+        return time_bucket(self.max_age)
 
     def _call(self, endpoint: str, **params) -> dict:
         salt = secrets.token_hex(6)

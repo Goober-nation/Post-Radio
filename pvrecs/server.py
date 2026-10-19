@@ -14,13 +14,46 @@ class RadioRequest(BaseModel):
     recording_mbid: str | None = None
     genres: list[str] | None = None
     genre_op: Literal["or", "and"] = "or"
-    unheard: Literal["tracks", "artists"] | None = None
+    unheard: Literal["none", "tracks", "artists"] | None = None  # None = config default
     explore: float | None = Field(None, ge=0, le=1)
     popularity: float | None = Field(None, ge=0, le=1)
     n: int | None = Field(None, ge=1, le=500)
     per_artist: int | None = Field(None, ge=1)
     rng_seed: int | None = None
     auto_popularity: bool = False  # ignore configured default popularity; follow explore
+
+
+class ArtistRef(BaseModel):
+    name: str = Field(min_length=1)
+    mbid: str | None = None
+
+
+class AlbumRef(BaseModel):
+    artist: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    artist_mbid: str | None = None
+
+
+class TrackRef(AlbumRef):
+    recording_mbid: str | None = None
+
+
+class FeedbackSection(BaseModel):
+    model_config = {"extra": "forbid"}
+    artists: list[str | ArtistRef] = []
+    albums: list[AlbumRef] = []
+    tracks: list[TrackRef] = []
+
+
+class FeedbackImport(BaseModel):
+    """Binary loves/hates. Each import is stored as one dated batch; the newest opinion per item wins."""
+
+    model_config = {"extra": "forbid", "json_schema_extra": {"examples": [{
+        "loves": {"artists": ["Slowdive", {"name": "Pixies", "mbid": "b6b2bb8d-54a9-491f-9607-7b546023b433"}],
+                  "tracks": [{"artist": "Cocteau Twins", "title": "Heaven or Las Vegas"}]},
+        "hates": {"albums": [{"artist": "My Bloody Valentine", "title": "m b v"}]}}]}}
+    loves: FeedbackSection | None = None
+    hates: FeedbackSection | None = None
 
 
 class SaveRequest(BaseModel):
@@ -67,9 +100,9 @@ def create_app(rec: Recommender | None = None) -> FastAPI:
             raise HTTPException(409, f"{e} exists; pass overwrite=true") from e
 
     @app.post("/feedback")
-    def import_feedback(body: dict):
+    def import_feedback(body: FeedbackImport):
         try:
-            return rec.import_feedback(body)
+            return rec.import_feedback(body.model_dump(exclude_none=True))
         except ValueError as e:
             raise HTTPException(422, str(e)) from e
 

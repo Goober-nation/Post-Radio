@@ -1,4 +1,5 @@
 """Provider interfaces. The engine only talks to these; each source lives in its own adapter module."""
+import random
 from abc import ABC, abstractmethod
 
 from ..models import Artist, Edge, Feedback, History, Track
@@ -43,7 +44,8 @@ class RadioSource(ABC):
     name: str
 
     @abstractmethod
-    def radio(self, artist: Artist, popularity: float, mode: str) -> list[Track]: ...
+    def radio(self, artist: Artist, popularity: float, mode: str, rng: random.Random | None = None) -> list[Track]:
+        """rng: use it for any random choice so a run's --rng-seed reproduces the playlist."""
 
 
 class Tagger(ABC):
@@ -68,10 +70,22 @@ class GenreSource(ABC):
     def genre_tracks(self, genres: list[str], op: str, popularity: float, limit: int) -> list[Track]:
         return []
 
+    def supported_genres(self) -> list[str] | None:
+        """The fixed genre list this source understands, or None for free-form tags."""
+        return None
+
+    def unsupported(self, genres: list[str]) -> list[str]:
+        """Requested genres this source can't serve (it contributes nothing for them)."""
+        return []
+
 
 class HistoryProvider(ABC):
     @abstractmethod
     def load(self) -> History: ...
+
+    def version(self) -> object:
+        """Same contract as FeedbackProvider.version()."""
+        return None
 
 
 class NoHistory(HistoryProvider):
@@ -87,8 +101,20 @@ class FeedbackProvider(ABC):
     @abstractmethod
     def load(self) -> list[Feedback]: ...
 
+    def version(self) -> object:
+        """Changes whenever load() may return something different; consumers reload on change.
+        None = never changes (e.g. a static list)."""
+        return None
+
 
 class TrackSimilarity(ABC):
     @abstractmethod
     def similar(self, track: Track, limit: int) -> list[tuple[Track, float]]:
         """(similar track, weight 0..1), strongest first. track needs a recording MBID."""
+
+
+def time_bucket(seconds: int) -> int:
+    """A version() for remote sources: changes every `seconds` (their cache max-age)."""
+    import time
+
+    return int(time.time() // max(1, seconds))

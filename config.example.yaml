@@ -70,6 +70,7 @@ advanced:
   tag_radio_recordings: 60
   genre_seed_artists: 30
   genre_seed_tracks: 100
+  genre_recordings_per_artist: 3
   shortlist_min: 40
   candidate_artists_min: 18
   radio_neighbours: 3

@@ -6,7 +6,7 @@ from pathlib import Path
 
 from ..http import Http
 from ..models import History, Play
-from . import HistoryProvider
+from . import HistoryProvider, time_bucket
 
 LB_API = "https://api.listenbrainz.org/1"
 
@@ -15,10 +15,13 @@ class ListenBrainzHistory(HistoryProvider):
     """All-time stats for a user. Public profiles work without a token."""
 
     def __init__(self, http: Http, user: str, token: str | None = None, max_artists: int = 1000,
-                 max_tracks: int = 5000):
+                 max_tracks: int = 5000, refresh_s: int = 86400):
         self.http, self.user = http, user
         self.headers = {"Authorization": f"Token {token}"} if token else None
-        self.max_artists, self.max_tracks = max_artists, max_tracks
+        self.max_artists, self.max_tracks, self.refresh_s = max_artists, max_tracks, refresh_s
+
+    def version(self) -> object:
+        return time_bucket(self.refresh_s)
 
     def _pages(self, kind: str, cap: int):
         """First page tells us the total; the rest are fetched in parallel (Http enforces LB's rate)."""
@@ -51,6 +54,10 @@ class FileHistory(HistoryProvider):
 
     def __init__(self, path: str | Path):
         self.path = Path(path)
+
+    def version(self) -> object:
+        st = self.path.stat() if self.path.exists() else None
+        return (st.st_size, st.st_mtime_ns) if st else None
 
     def load(self) -> History:
         return History.from_plays(self._plays())
