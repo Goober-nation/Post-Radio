@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 from pvrecs.config import Config  # noqa: E402
 
-USER = ("defaults", "mix", "storage", "sources", "feedback", "server")
+USER = ("defaults", "storage", "sources", "feedback", "server")
 
 
 def main():

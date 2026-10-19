@@ -172,9 +172,12 @@ class Recommender:
         return self._remember("radio", res, default_name=self._radio_name(res))
 
     def _mix(self, overrides: dict[str, float] | None) -> dict[str, float]:
-        """Config stream multipliers with per-run overrides. Keys: deezer-top, lb, deezer-radio, troi,
+        """advanced.mix stream caps with per-run overrides. Keys: deezer-top, lb, deezer-radio, troi,
         track-sim, lb-tags (underscores accepted)."""
         base = self.cfg.stream_mix()
+        for k, v in base.items():
+            if not 0 <= float(v) <= 1:
+                raise ValueError(f"advanced.mix.{k} must be in [0, 1]")
         for k, v in (overrides or {}).items():
             key = k.replace("_", "-")
             if key not in base:

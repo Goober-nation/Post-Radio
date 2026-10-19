@@ -8,11 +8,6 @@ defaults:
   n: 50
   per_artist: 2
   unheard: null
-mix:
-  deezer_top: 1.0
-  lb: 1.0
-  deezer_radio: 1.0
-  troi: 1.0
 storage:
   save_dir: ~/.local/share/pvrecs/playlists
   feedback_file: null
@@ -40,7 +35,11 @@ server:
 # ---------------- advanced: algorithm constants ----------------
 # Changing these alters ranking behaviour; defaults are tuned by hand on ~10 seeds.
 advanced:
-  mix_advanced:
+  mix:
+    deezer-top: 1.0
+    lb: 1.0
+    deezer-radio: 1.0
+    troi: 1.0
     track-sim: 1.0
     lb-tags: 1.0
   hop_span: 3.0

@@ -52,6 +52,16 @@ Effects:
 A track seed also injects its own similar recordings. Navidrome needs `feedback.navidrome_url` (or
 `$NAVIDROME_URL`), `$NAVIDROME_USERNAME` and `$NAVIDROME_PASSWORD`.
 
+## Stream caps (`advanced.mix`, per run `--mix`)
+
+Each candidate stream (`deezer-top`, `lb`, `deezer-radio`, `troi`, `track-sim`, `lb-tags`) has a cap from 0 to 1.
+1 means everything the stream offers and 0 turns it off. A cap only cuts its own stream, keeping the tracks
+closest to the popularity target, so `deezer-top: 0.2` keeps at most 20 of an artist's top 100.
+
+These are caps, not playlist shares. A playlist only takes `per_artist` tracks per artist, so a catalogue cap
+barely changes the final mix until it gets low (about 0.03). Example run:
+`pvrecs radio --artist X --mix "deezer-top=0.03,lb=0.03"`.
+
 ## Config
 
 Copy `config.example.yaml` to `config.yaml`; only include keys you change. The user sections are

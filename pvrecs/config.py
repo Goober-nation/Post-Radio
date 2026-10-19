@@ -20,20 +20,6 @@ class Defaults:
 
 
 @dataclass
-class Mix:
-    """How much of each candidate stream to use, 0..1 (1 = all it offers, 0 = off). Each one only cuts
-    its own stream, keeping the tracks closest to the popularity target. E.g. deezer_top 0.2 = at most 20
-    of an artist's top 100 Deezer tracks."""
-    deezer_top: float = 1.0  # Deezer artist top tracks (catalogue)
-    lb: float = 1.0  # ListenBrainz popularity catalogue (needs a token)
-    deezer_radio: float = 1.0  # Deezer artist radio around the seed + closest neighbours
-    troi: float = 1.0  # LB Radio (troi) seed + similar-artist picks
-
-    def as_sources(self) -> dict[str, float]:
-        return {"deezer-top": self.deezer_top, "lb": self.lb, "deezer-radio": self.deezer_radio, "troi": self.troi}
-
-
-@dataclass
 class Storage:
     save_dir: str = "~/.local/share/pvrecs/playlists"  # liked playlists are written here as JSON
     feedback_file: str | None = None  # imported loves/hates log; null = <save_dir>/feedback/opinions.jsonl
@@ -68,8 +54,13 @@ class Server:
 # ---------------------------------------------------------------- advanced (algorithm constants)
 @dataclass
 class Advanced:
-    # stream multipliers beyond the user-facing `mix` section (same 0..1 meaning)
-    mix_advanced: dict[str, float] = field(default_factory=lambda: {
+    # stream caps, 0..1 (1 = all a stream offers, 0 = off). Each cuts only its own stream, keeping the tracks
+    # nearest the popularity target: deezer-top 0.2 = at most 20 of an artist's top 100. Per run: --mix.
+    mix: dict[str, float] = field(default_factory=lambda: {
+        "deezer-top": 1.0,  # Deezer artist top tracks (catalogue)
+        "lb": 1.0,  # ListenBrainz popularity catalogue (needs a token)
+        "deezer-radio": 1.0,  # Deezer artist radio around the seed + closest neighbours
+        "troi": 1.0,  # LB Radio (troi) seed + similar-artist picks
         "track-sim": 1.0,  # similar recordings injected by a track seed
         "lb-tags": 1.0})  # tagged recordings injected by a genre seed
     # explore -> graph shape
@@ -155,7 +146,6 @@ class Advanced:
 @dataclass
 class Config:
     defaults: Defaults = field(default_factory=Defaults)
-    mix: Mix = field(default_factory=Mix)
     storage: Storage = field(default_factory=Storage)
     sources: Sources = field(default_factory=Sources)
     feedback: FeedbackCfg = field(default_factory=FeedbackCfg)
@@ -163,7 +153,7 @@ class Config:
     advanced: Advanced = field(default_factory=Advanced)
 
     def stream_mix(self) -> dict[str, float]:
-        return {**self.advanced.mix_advanced, **self.mix.as_sources()}
+        return dict(self.advanced.mix)
 
     def path(self, p: str) -> Path:
         q = Path(os.path.expanduser(p))
