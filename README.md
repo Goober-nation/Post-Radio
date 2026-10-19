@@ -4,6 +4,9 @@ Tunable "exploration radio", like ListenBrainz's Weekly Exploration but seeded f
 with two knobs: how far it wanders (`explore`) and how mainstream it gets (`popularity`). It also pulls LB's
 own Weekly Exploration/Jams playlists. **No API key needed**; an LB token only adds a second track source.
 
+Full documentation lives in [docs/](docs/README.md): [architecture](docs/architecture.md),
+[classes](docs/classes.md), [configuration](docs/configuration.md) and [dependencies](docs/dependencies.md).
+
 ## Use
 
 ```
