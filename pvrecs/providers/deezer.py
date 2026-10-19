@@ -68,7 +68,9 @@ class Deezer(SimilarArtists, TopTracks, RadioSource, GenreSource):
             if not cheap or self._titles(only.deezer_id) & cheap:
                 return only
             slow = self.known_titles(artist) if self.known_titles else set()
-            return only if slow and self._titles(only.deezer_id) & slow else None
+            if not slow:
+                return only  # MB knows nothing either: no evidence against the match, same as having no titles
+            return only if self._titles(only.deezer_id) & slow else None
         titles = cheap or (self.known_titles(artist) if artist.mbid and self.known_titles else set())
         if not titles:
             return cands[0]  # no way to tell them apart: most-followed

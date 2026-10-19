@@ -32,6 +32,11 @@ from .providers import (
 )
 
 POOL_PREFIX = "pvrecs-fetch"
+_worker = threading.local()  # in_pool=True only on threads of a Radio's own fetch pool
+
+
+def _mark_pool_thread() -> None:
+    _worker.in_pool = True
 
 
 @dataclass
@@ -173,7 +178,7 @@ class Radio:
     def _map(self, fn, items: list) -> list:
         """Run independent fetches concurrently (order kept). Per-host limits live in Http, so this
         only overlaps network latency; it never raises the request rate past what each API allows."""
-        if len(items) <= 1 or threading.current_thread().name.startswith(POOL_PREFIX):
+        if len(items) <= 1 or getattr(_worker, "in_pool", False):
             # already inside a pooled job: run inline, since resubmitting could deadlock a saturated pool
             return [fn(x) for x in items]
         return list(self._pool().map(fn, items))
@@ -183,7 +188,8 @@ class Radio:
         fetch_workers fetches run at once. _map called from inside a pooled job runs inline (no deadlock)."""
         with self._pool_lock:
             if self._executor is None:
-                self._executor = ThreadPoolExecutor(max_workers=self.a.fetch_workers, thread_name_prefix=POOL_PREFIX)
+                self._executor = ThreadPoolExecutor(max_workers=self.a.fetch_workers, thread_name_prefix=POOL_PREFIX,
+                                                    initializer=_mark_pool_thread)
             return self._executor
 
     def close(self) -> None:

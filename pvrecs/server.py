@@ -1,4 +1,5 @@
 """Optional HTTP wrapper around pvrecs.api.Recommender (`pvrecs serve`). Same operations as the library."""
+from contextlib import asynccontextmanager
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException
@@ -63,8 +64,13 @@ class SaveRequest(BaseModel):
 
 def create_app(rec: Recommender | None = None) -> FastAPI:
     rec = rec or Recommender()
-    app = FastAPI(title="pvrecs")
-    app.router.on_shutdown.append(rec.close)  # release worker threads with the server
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        yield
+        rec.close()  # release worker threads and the cache connection with the server
+
+    app = FastAPI(title="pvrecs", lifespan=lifespan)
 
     # plain `def` handlers run in FastAPI's threadpool, so blocking provider I/O is fine
     @app.post("/radio")

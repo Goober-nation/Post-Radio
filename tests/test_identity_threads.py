@@ -18,8 +18,14 @@ def one_namesake(titles):
 
 
 def test_single_namesake_rejected_when_free_titles_disagree():
-    dz = Deezer(one_namesake(["rai 1", "rai 2"]), cheap_titles=lambda a: {"soulsista"})
+    dz = Deezer(one_namesake(["rai 1", "rai 2"]), cheap_titles=lambda a: {"soulsista"},
+                known_titles=lambda a: {"soulsista", "sometimes"})  # MB disagrees too -> it's a namesake
     assert dz.resolve(Artist("Bilal", mbid="m")) is None
+
+
+def test_single_match_kept_when_lb_disagrees_but_mb_knows_nothing():
+    dz = Deezer(one_namesake(["rai 1"]), cheap_titles=lambda a: {"soulsista"}, known_titles=lambda a: set())
+    assert dz.resolve(Artist("Bilal", mbid="m")) == 9  # no evidence against it, same as having no titles
 
 
 def test_single_match_accepted_with_one_shared_title_or_no_free_titles():
@@ -82,7 +88,7 @@ def test_single_match_falls_back_to_mb_when_free_titles_disagree():
 
 def test_failed_match_is_retried_after_memo_ttl(monkeypatch):
     http = one_namesake(["x"])
-    dz = Deezer(http, cheap_titles=lambda a: {"nope"}, memo_ttl_s=10)
+    dz = Deezer(http, cheap_titles=lambda a: {"nope"}, known_titles=lambda a: {"nope"}, memo_ttl_s=10)
     assert dz.resolve(Artist("Bilal", mbid="m")) is None
     http.routes["/artist/9/top"] = {"data": [dz_track(1, 9, "Nope")]}
     assert dz.resolve(Artist("Bilal", mbid="m")) is None  # still memoised
@@ -106,3 +112,32 @@ def test_close_stops_threads_and_is_reusable():
     r.close()  # idempotent
     assert r._map(lambda x: x + 1, [1, 2]) == [2, 3] and r._pool() is not first
     r.close()
+
+
+def test_inline_rule_is_a_thread_flag_not_a_name():
+    import threading as th
+
+    r = Radio(Providers(resolver=Resolver(), similar=[Similar()], tracks=[Tracks()]), log=lambda *_: None)
+    seen = []
+    t = th.Thread(target=lambda: seen.append(r._map(lambda x: th.current_thread().name, [1, 2])),
+                  name="pvrecs-fetch-impostor")
+    t.start()
+    t.join()
+    assert all(n != "pvrecs-fetch-impostor" for n in seen[0])  # not mistaken for a pool thread: used the pool
+    r.close()
+
+
+def test_server_closes_recommender_on_shutdown():
+    from fastapi.testclient import TestClient
+
+    from pvrecs.server import create_app
+
+    class Rec:
+        closed = False
+
+        def close(self):
+            Rec.closed = True
+
+    with TestClient(create_app(Rec())):
+        pass
+    assert Rec.closed
