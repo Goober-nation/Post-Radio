@@ -10,7 +10,7 @@ server = ["fastapi", "uvicorn"]
 dev = ["pytest", "ruff", "fastapi", "httpx"]
 
 [project.scripts]
-pvrecs = "pvrecs.cli:main"
+pvrecs = "pvrecs.cli:run"
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

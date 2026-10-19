@@ -22,6 +22,7 @@ class RadioRequest(BaseModel):
     per_artist: int | None = Field(None, ge=1)
     rng_seed: int | None = None
     auto_popularity: bool = False  # ignore configured default popularity; follow explore
+    mix: dict[str, float] | None = None  # per-run stream multipliers 0..1, e.g. {"deezer-top": 0.2}
 
 
 class ArtistRef(BaseModel):
@@ -81,7 +82,7 @@ def create_app(rec: Recommender | None = None) -> FastAPI:
         try:
             return rec.generate(**req.model_dump())
         except ValueError as e:
-            raise HTTPException(404, str(e)) from e
+            raise HTTPException(422 if "mix" in str(e) else 404, str(e)) from e
 
     @app.get("/deep-cuts")
     def deep_cuts(user: str | None = None, kind: str = "exploration"):

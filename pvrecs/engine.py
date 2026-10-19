@@ -47,6 +47,7 @@ class Params:
     seed: int | None = None
     popularity: float | None = None  # None = derived from explore
     unheard: str | None = None  # None | "tracks" (drop played tracks) | "artists" (also drop known artists)
+    mix: dict[str, float] = field(default_factory=dict)  # stream -> 0..1 share of what it offers (missing = 1)
     adv: Advanced = field(default_factory=Advanced)
 
     @property
@@ -372,9 +373,18 @@ class Radio:
         catalogue = {n.artist.key: tracks for n, tracks in zip(shortlist, fetched, strict=True)}
         nodes = sorted(shortlist, key=lambda n: -self.artist_weight(n, p))
         nodes = nodes[:max(self.a.candidate_artists_min, p.n // 2)]
-        out = [(t, n) for n in nodes for t in catalogue[n.artist.key]]
+        out = []
+        for n in nodes:
+            tracks = catalogue[n.artist.key]
+            by_source: dict[str, list[Track]] = defaultdict(list)
+            for t in tracks:
+                by_source[next(iter(t.sources), "")].append(t)
+            for src, ts in by_source.items():  # each catalogue stream (deezer-top, lb) cut on its own
+                out += [(t, n) for t in self._cut(ts, src, p, self.a.top_tracks_limit)]
         if seed_track and self.p.track_similarity:
-            for t, w in self.p.track_similarity.similar(seed_track, self.a.seed_track_similar_limit):
+            sims = self.p.track_similarity.similar(seed_track, self.a.seed_track_similar_limit)
+            keep = {id(t) for t in self._cut([t for t, _ in sims], "track-sim", p, self.a.seed_track_similar_limit)}
+            for t, w in (x for x in sims if id(x[0]) in keep):
                 hop = 0 if t.artist.key == seed.artist.key else 1
                 tn = g.node_for(t.artist, hop, self.a.seed_track_affinity * w, "track-sim", seed)
                 t.artist = tn.artist
@@ -388,7 +398,8 @@ class Radio:
         if seed.artist.virtual:
             genres, op = self._genre_query
             for prov in self.p.genres:
-                for t in prov.genre_tracks(genres, op, p.pop, self.a.genre_seed_tracks):
+                tagged = prov.genre_tracks(genres, op, p.pop, self.a.genre_seed_tracks)
+                for t in self._cut(tagged, "lb-tags", p, self.a.genre_seed_tracks):
                     tn = g.node_for(t.artist, 1, self.a.source_weights.get("genre", 0.9), "genre", seed)
                     t.artist = tn.artist
                     out.append((t, tn))
@@ -400,12 +411,24 @@ class Radio:
         streams = self._map(lambda ij: ij[1][1].radio(ij[1][0].artist, p.pop, p.radio_mode,
                                                       random.Random(seeds[ij[0]])), list(enumerate(jobs)))
         for (n, _), tracks in zip(jobs, streams, strict=True):
-            for t in tracks:
+            src = next(iter(tracks[0].sources), "") if tracks else ""
+            for t in self._cut(tracks, src, p):  # radio streams: share of what that call returned
                 hop = 0 if t.artist.key == seed.artist.key else n.hop + 1
                 rn = g.node_for(t.artist, hop, n.affinity * self.a.source_weights["radio"], "radio", n)
                 t.artist = rn.artist
                 out.append((t, rn))
         return out
+
+    def _cut(self, tracks: list[Track], source: str, p: Params, full: int | None = None) -> list[Track]:
+        """Apply the stream's mix multiplier: keep round(full * m) tracks, those closest to the popularity
+        target (so a low -p still reaches deep cuts). full = the stream's nominal size (default: as returned)."""
+        m = p.mix.get(source, 1.0)
+        if m >= 1.0:
+            return tracks
+        cap = round((full if full is not None else len(tracks)) * max(0.0, m))
+        if cap >= len(tracks):
+            return tracks
+        return sorted(tracks, key=lambda t: abs(t.popularity - p.pop))[:cap]
 
     # ---------- ranking ----------
     def generate(self, p: Params, **seed_args) -> dict:
@@ -473,6 +496,7 @@ class Radio:
                      "track": seed_track.title if seed_track else None, "popularity": self.seed_pop},
             "genres": self._genre_query[0] or None, "genre_op": self._genre_query[1] if self._genre_query[0] else None,
             "explore": p.explore, "popularity": p.popularity, "unheard": p.unheard, "mode": p.radio_mode,
+            "mix": {k: v for k, v in p.mix.items() if v < 1} or None,
             "graph_size": len(g.nodes),
             "candidates": len(merged),
             "tracks": [self._row(s, t, n, g, history, taste, self._boost(t)) for b in bands for (s, t, n) in b],

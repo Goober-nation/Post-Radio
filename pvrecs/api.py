@@ -154,13 +154,14 @@ class Recommender:
                  recording_mbid: str | None = None, genres: list[str] | None = None, genre_op: str = "or",
                  explore: float | None = None, popularity: float | None = None, n: int | None = None,
                  per_artist: int | None = None, rng_seed: int | None = None, auto_popularity: bool = False,
-                 unheard: str | None = None) -> dict:
+                 unheard: str | None = None, mix: dict[str, float] | None = None) -> dict:
         """Unset knobs fall back to config defaults. auto_popularity=True ignores a configured default
         popularity so it follows explore."""
         d = self.cfg.defaults
         pop = popularity if popularity is not None else (None if auto_popularity else d.popularity)
         p = Params(explore=d.explore if explore is None else explore, n=n or d.n, per_artist=per_artist or d.per_artist,
-                   seed=rng_seed, popularity=pop, unheard=self._unheard(unheard), adv=self.cfg.advanced)
+                   seed=rng_seed, popularity=pop, unheard=self._unheard(unheard), mix=self._mix(mix),
+                   adv=self.cfg.advanced)
         for name, v in (("explore", p.explore), ("popularity", p.popularity)):
             if v is not None and not 0 <= v <= 1:
                 raise ValueError(f"{name} must be in [0, 1]")
@@ -169,6 +170,19 @@ class Recommender:
         res = self.radio.generate(p, artist=artist, track=track, artist_mbid=artist_mbid,
                                   recording_mbid=recording_mbid, genres=genres, genre_op=genre_op)
         return self._remember("radio", res, default_name=self._radio_name(res))
+
+    def _mix(self, overrides: dict[str, float] | None) -> dict[str, float]:
+        """Config stream multipliers with per-run overrides. Keys: deezer-top, lb, deezer-radio, troi,
+        track-sim, lb-tags (underscores accepted)."""
+        base = self.cfg.stream_mix()
+        for k, v in (overrides or {}).items():
+            key = k.replace("_", "-")
+            if key not in base:
+                raise ValueError(f"unknown mix stream '{k}' (one of {', '.join(base)})")
+            if not 0 <= float(v) <= 1:
+                raise ValueError(f"mix {k} must be in [0, 1]")
+            base[key] = float(v)
+        return base
 
     def _unheard(self, value: str | None) -> str | None:
         """None = config default; "none" switches it off for this run even if the config sets it."""

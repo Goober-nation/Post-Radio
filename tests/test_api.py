@@ -41,7 +41,7 @@ def test_config_partial_yaml_and_unknown_keys(tmp_path):
 def test_example_config_matches_defaults():
     data = yaml.safe_load((config_mod.ROOT / "config.example.yaml").read_text())
     assert config_mod.load(config_mod.ROOT / "config.example.yaml") == config_mod.Config()
-    assert set(data) == {"defaults", "storage", "sources", "feedback", "server", "advanced"}
+    assert set(data) == {"defaults", "mix", "storage", "sources", "feedback", "server", "advanced"}
 
 
 def test_result_cache_ttl_and_lru(monkeypatch):

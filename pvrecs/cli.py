@@ -20,6 +20,18 @@ def load_env(path: Path):
             os.environ.setdefault(k.strip(), v.strip().strip("'\""))
 
 
+def _parse_mix(text: str | None) -> dict[str, float] | None:
+    if not text:
+        return None
+    out = {}
+    for part in text.split(","):
+        k, sep, v = part.partition("=")
+        if not sep:
+            raise SystemExit(f"--mix: expected STREAM=X, got '{part}'")
+        out[k.strip()] = float(v)
+    return out
+
+
 def _unit(v: str) -> float:
     f = float(v)
     if not 0 <= f <= 1:
@@ -60,6 +72,9 @@ def parser() -> argparse.ArgumentParser:
     r.add_argument("--genre-op", choices=["or", "and"], default="or", help="several genres: any (or) / all (and)")
     r.add_argument("--unheard", choices=["none", "tracks", "artists"],
                    help="tracks: drop played tracks; artists: also drop known artists; none: off (overrides config)")
+    r.add_argument("--mix", metavar="STREAM=X,...",
+                   help="per-run stream multipliers 0..1, e.g. 'deezer-top=0.2,troi=1' (streams: deezer-top, lb, "
+                        "deezer-radio, troi, track-sim, lb-tags)")
     r.add_argument("-e", "--explore", type=_unit, help="0 = close, 1 = ~3 hops out")
     r.add_argument("-p", "--popularity", type=_unit, help="0 = deep cuts/small artists, 1 = hits")
     r.add_argument("--auto-popularity", action="store_true", help="ignore configured popularity; follow explore")
@@ -142,7 +157,7 @@ def main(argv=None):
         res = rec.generate(artist=a.artist, track=a.track, artist_mbid=a.artist_mbid, recording_mbid=a.recording_mbid,
                            genres=genres, genre_op=a.genre_op, unheard=a.unheard, explore=a.explore,
                            popularity=a.popularity, n=a.n, per_artist=a.per_artist, rng_seed=a.rng_seed,
-                           auto_popularity=a.auto_popularity)
+                           auto_popularity=a.auto_popularity, mix=_parse_mix(a.mix))
     else:
         res = rec.deep_cuts(a.user, a.kind)
 
@@ -164,5 +179,13 @@ def main(argv=None):
         log(f"saved: {rec.save(res['result_id'], a.save or None)}")
 
 
+def run(argv=None):
+    """Entry point: user errors (bad seed, unknown stream, out-of-range value) print one line, no traceback."""
+    try:
+        main(argv)
+    except (ValueError, FileNotFoundError, FileExistsError, KeyError) as e:
+        raise SystemExit(f"pvrecs: error: {e}") from None
+
+
 if __name__ == "__main__":
-    main()
+    run()
