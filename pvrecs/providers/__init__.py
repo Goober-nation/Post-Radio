@@ -57,6 +57,18 @@ class TagRadio(ABC):
     def artists_for_tags(self, tags: list[str], popularity: float, limit: int) -> list[Artist]: ...
 
 
+class GenreSource(ABC):
+    """Genre/tag seeds. op is 'and' (all genres) or 'or' (any)."""
+
+    name: str
+
+    @abstractmethod
+    def genre_artists(self, genres: list[str], op: str, popularity: float, limit: int) -> list[Artist]: ...
+
+    def genre_tracks(self, genres: list[str], op: str, popularity: float, limit: int) -> list[Track]:
+        return []
+
+
 class HistoryProvider(ABC):
     @abstractmethod
     def load(self) -> History: ...

@@ -16,11 +16,13 @@ class Defaults:
     popularity: float | None = None  # 0 = deep cuts by small artists, 1 = hits; null = follow explore
     n: int = 50  # playlist length
     per_artist: int = 2  # max tracks per artist
+    unheard: str | None = None  # null | tracks (drop played tracks) | artists (also drop artists you know)
 
 
 @dataclass
 class Storage:
     save_dir: str = "~/.local/share/pvrecs/playlists"  # liked playlists are written here as JSON
+    feedback_file: str | None = None  # imported loves/hates log; null = <save_dir>/feedback/opinions.jsonl
     result_ttl_s: int = 3600  # unsaved results are kept in memory this long...
     result_cache_size: int = 50  # ...up to this many
     http_cache: str = ".cache/http.sqlite"  # relative paths resolve against the repo root
@@ -38,7 +40,7 @@ class Sources:
 @dataclass
 class FeedbackCfg:
     enabled: bool = True  # loves/hates/ratings influence the recs
-    sources: list[str] = field(default_factory=lambda: ["navidrome", "lb"])  # priority: first wins per track
+    sources: list[str] = field(default_factory=lambda: ["json", "navidrome", "lb"])  # priority: first wins
     navidrome_url: str | None = None  # null = $NAVIDROME_URL; creds from $NAVIDROME_USERNAME/$NAVIDROME_PASSWORD
     lb_user: str | None = None  # null = sources.lb_user / $LISTENBRAINZ_USERNAME
 
@@ -70,7 +72,7 @@ class Advanced:
     unknown_artist_pop_fit: float = 0.7
     # graph
     source_weights: dict[str, float] = field(default_factory=lambda: {
-        "lb": 1.0, "deezer": 0.85, "mb": 0.6, "tag": 0.5, "radio": 0.5})
+        "lb": 1.0, "deezer": 0.85, "mb": 0.6, "tag": 0.5, "radio": 0.5, "genre": 0.9})
     agreement_bonus: float = 1.15
     graph_cap: int = 160
     fanout: dict[int, int] = field(default_factory=lambda: {1: 14, 2: 8, 3: 6})
@@ -79,6 +81,8 @@ class Advanced:
     sparse_graph: int = 8  # fewer hop-1 artists -> tag fallback
     tag_neighbours: int = 20
     tag_radio_recordings: int = 60
+    genre_seed_artists: int = 30  # genre seeds: hop-1 artists per genre source
+    genre_seed_tracks: int = 100  # genre seeds: tagged recordings injected as candidates
     # candidates
     shortlist_min: int = 40
     candidate_artists_min: int = 18
@@ -105,6 +109,7 @@ class Advanced:
     seed_track_boost: float = 1.0  # injected seed-similar tracks: score *= 1 + boost * similarity
     seed_track_affinity: float = 0.8  # graph affinity for artists reached only via the seed track
     feedback_max_age_s: int = 900  # re-read loves/ratings after this long
+    feedback_store_depth: int = 5000  # imported-JSON log: only the newest N opinions are read
     # provider scales
     deezer_fans_full_scale: float = 6.9  # log10 fans of a superstar
     deezer_rank_full_scale: int = 900_000

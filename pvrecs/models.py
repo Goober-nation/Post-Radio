@@ -23,10 +23,11 @@ class Artist:
     mbid: str | None = None
     deezer_id: int | None = None
     popularity: float | None = None  # global audience size, 0 = nobody, 1 = superstar
+    virtual: bool = False  # a non-artist seed node (e.g. a genre); never sent to artist APIs
 
     @property
     def key(self) -> str:
-        return norm(self.name)
+        return ("~" if self.virtual else "") + norm(self.name)
 
     def absorb(self, other: "Artist") -> None:
         """Fill gaps from another view of the same artist."""

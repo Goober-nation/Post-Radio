@@ -4,7 +4,7 @@ from troi.plist import plist
 
 from ..http import Http
 from ..models import Artist, Edge, Track, log_popularity
-from . import RadioSource, SimilarArtists, TagRadio, TopTracks, TrackSimilarity
+from . import GenreSource, RadioSource, SimilarArtists, TagRadio, TopTracks, TrackSimilarity
 
 API = "https://api.listenbrainz.org/1"
 LABS = "https://labs.api.listenbrainz.org"
@@ -146,25 +146,45 @@ class TroiRadio(RadioSource):
         return out
 
 
-class TroiTagRadio(TagRadio):
-    """LB-radio tag search (troi's tag element endpoint), through our Http layer."""
+class TroiTagRadio(TagRadio, GenreSource):
+    """LB-radio tag search (troi's tag element endpoint), through our Http layer. Serves both the
+    sparse-seed tag fallback and genre seeds."""
+
+    name = "lb-tags"
 
     def __init__(self, http: Http, token: str | None = None, window: int = 34):
         self.http, self.headers = http, _headers(token)
         self.meta = LBMetadata(http, token)
         self.window = window
 
-    def recordings_for_tags(self, tags: list[str], popularity: float, limit: int) -> list[str]:
+    def _search(self, tags: list[str], op: str, popularity: float, limit: int) -> list[tuple[str, float]]:
+        """(recording mbid, popularity 0..1) — LB's 'percent' is a popularity percentile, 0 = most played."""
         lo, hi = troi_window(popularity, self.window)
         d = self.http.get(f"{API}/lb-radio/tags", headers=self.headers, params={
-            "tag": tags, "operator": "or", "pop_begin": lo, "pop_end": hi, "count": limit})
-        return [r["recording_mbid"] for r in d or [] if r.get("recording_mbid")] if isinstance(d, list) else []
+            "tag": [t.lower() for t in tags], "operator": op, "pop_begin": lo, "pop_end": hi, "count": limit})
+        if not isinstance(d, list):
+            return []
+        return [(r["recording_mbid"], 1 - float(r.get("percent") or 50) / 100) for r in d if r.get("recording_mbid")]
 
     def artists_for_tags(self, tags: list[str], popularity: float, limit: int) -> list[Artist]:
+        return self.genre_artists(tags, "or", popularity, limit)
+
+    def genre_tracks(self, genres: list[str], op: str, popularity: float, limit: int) -> list[Track]:
+        hits = self._search(genres, op, popularity, limit)
+        meta = self.meta.recordings([m for m, _ in hits])
+        out = []
+        for m, pop in hits:
+            t = meta.get(m)
+            if t:
+                t.popularity, t.sources = pop, {"lb-tags"}
+                out.append(t)
+        return out
+
+    def genre_artists(self, genres: list[str], op: str, popularity: float, limit: int) -> list[Artist]:
         seen: dict[str, Artist] = {}
-        for t in self.meta.recordings(self.recordings_for_tags(tags, popularity, limit)).values():
+        for t in self.genre_tracks(genres, op, popularity, limit * 3):
             seen.setdefault(t.artist.key, t.artist)
-        return list(seen.values())
+        return list(seen.values())[:limit]
 
 
 def _trim_top(data):

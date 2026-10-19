@@ -3,14 +3,14 @@ from collections.abc import Callable
 
 from ..http import Http
 from ..models import Artist, Edge, Track, log_popularity, norm
-from . import RadioSource, SimilarArtists, TopTracks
+from . import GenreSource, RadioSource, SimilarArtists, TopTracks
 
 API = "https://api.deezer.com"
 FANS_FULL_SCALE = 6.9  # log10 fans of a superstar (Radiohead ~4M -> ~0.95)
 RANK_FULL_SCALE = 900_000  # Deezer track 'rank' of a global hit
 
 
-class Deezer(SimilarArtists, TopTracks, RadioSource):
+class Deezer(SimilarArtists, TopTracks, RadioSource, GenreSource):
     """`known_titles` lets Deezer tell same-named artists apart: given an artist with an MBID, it
     returns normalised titles that artist is known to have recorded (e.g. from MusicBrainz)."""
 
@@ -91,6 +91,32 @@ class Deezer(SimilarArtists, TopTracks, RadioSource):
             out.append(Track(t["title_short"] or t["title"], a, deezer_id=t["id"], popularity=pop,
                              sources={"deezer-radio"}))
         return out
+
+    def genre_artists(self, genres: list[str], op: str, popularity: float, limit: int) -> list[Artist]:
+        """Deezer only has ~25 broad genres (Rock, Rap/Hip Hop, ...); niche genres simply match nothing.
+        'and' keeps artists listed under every requested genre."""
+        d = self.http.get(f"{API}/genre")
+        ids: dict[str, int] = {}
+        for gn in (d or {}).get("data") or []:
+            if gn["id"]:  # 0 = "All"
+                for alias in [gn["name"], *gn["name"].split("/")]:  # "Rap/Hip Hop" -> rap, hiphop
+                    ids.setdefault(norm(alias), gn["id"])
+        per_genre = []
+        for gname in genres:
+            gid = ids.get(norm(gname))
+            if gid:
+                rows = (self.http.get(f"{API}/genre/{gid}/artists") or {}).get("data") or []
+                per_genre.append([self._artist(a) for a in rows])
+        if not per_genre or (op == "and" and len(per_genre) < len(genres)):
+            return []
+        if op == "and":
+            keys = set.intersection(*({a.key for a in arts} for arts in per_genre))
+            per_genre = [[a for a in per_genre[0] if a.key in keys]]
+        seen: dict[str, Artist] = {}
+        for arts in per_genre:
+            for a in arts:
+                seen.setdefault(a.key, a)
+        return list(seen.values())[:limit]
 
     def _artist(self, a: dict) -> Artist:
         fans = a.get("nb_fan")

@@ -10,6 +10,9 @@ own Weekly Exploration/Jams playlists. **No API key needed**; an LB token only a
 pvrecs radio --artist "Radiohead" -e 0.7            # explore 0..1
 pvrecs radio --track "Radiohead - Karma Police" -e 0.4 -p 0.1   # popularity 0 = deep cuts, 1 = hits
 pvrecs radio --artist-mbid <mbid> --save "late night"           # keep it
+pvrecs radio --genre "shoegaze,dream pop" --genre-op and   # genre seed (LB tags + Deezer genres)
+pvrecs radio --artist "Radiohead" --unheard artists   # tracks: drop played tracks; artists: drop known artists
+pvrecs feedback import loves.json / pvrecs feedback batches   # your own loves/hates, dated batches
 pvrecs deep-cuts [--user U] [--kind exploration|jams] [--save]  # LB Weekly Exploration, both weeks
 pvrecs saved [name]
 pvrecs serve                                          # HTTP API on 127.0.0.1:8765
@@ -36,7 +39,9 @@ HTTP (`pvrecs serve`): `POST /radio`, `GET /deep-cuts`, `GET /results/{id}`, `PO
 ## Taste (loves / hates / ratings)
 
 On by default (`feedback.enabled`, or `--no-feedback`). Sources, in priority order (the first with an
-opinion on a track wins): **Navidrome** (stars = +1; ratings 1★..5★ map to −1..+1 with 3★ neutral; artist
+opinion on a track wins): **your imported JSON** (`pvrecs feedback import`; an append-only, dated log in
+`<save_dir>/feedback/opinions.jsonl` where the newest opinion per item wins and only the newest
+`advanced.feedback_store_depth` opinions are read; the format is in `providers/feedback_store.py`), **Navidrome** (stars = +1; ratings 1★..5★ map to −1..+1 with 3★ neutral; artist
 and album stars/ratings count for the artist) and **LB** loves/hates (tokenless).
 Effects:
 - An artist's weight is multiplied by `love_factor` (1.5) to the power of a positive score, or by
@@ -74,9 +79,16 @@ cache and storage. `server.py` and `cli.py` are thin wrappers. `http.py` is a SQ
 with per-host throttling and backoff. MusicBrainz is held to 1 req/s and backs off exponentially on
 503 rather than failing.
 
+## Cost (cold cache, Radiohead, explore 0.6, n=50, token + LB user)
+
+About 2 s of CPU, under 100 MB RAM, and around 275 requests, mostly sequential, in about 130 s. About 23 s of
+that is MusicBrainz's 1 req/s limit and the rest is request latency. A warm rerun takes about 0.7 s and makes
+no requests. The SQLite cache is about 16 MB after one cold run (7-day TTL).
+
 ## Dev
 
 ```
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
+.venv/bin/python scripts/gen_config_example.py   # after changing pvrecs/config.py
 .venv/bin/pytest -q && .venv/bin/ruff check pvrecs tests
 ```

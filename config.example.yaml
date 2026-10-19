@@ -7,8 +7,10 @@ defaults:
   popularity: null
   n: 50
   per_artist: 2
+  unheard: null
 storage:
   save_dir: ~/.local/share/pvrecs/playlists
+  feedback_file: null
   result_ttl_s: 3600
   result_cache_size: 50
   http_cache: .cache/http.sqlite
@@ -21,6 +23,7 @@ sources:
 feedback:
   enabled: true
   sources:
+  - json
   - navidrome
   - lb
   navidrome_url: null
@@ -53,6 +56,7 @@ advanced:
     mb: 0.6
     tag: 0.5
     radio: 0.5
+    genre: 0.9
   agreement_bonus: 1.15
   graph_cap: 160
   fanout:
@@ -64,6 +68,8 @@ advanced:
   sparse_graph: 8
   tag_neighbours: 20
   tag_radio_recordings: 60
+  genre_seed_artists: 30
+  genre_seed_tracks: 100
   shortlist_min: 40
   candidate_artists_min: 18
   radio_neighbours: 3
@@ -85,6 +91,7 @@ advanced:
   seed_track_boost: 1.0
   seed_track_affinity: 0.8
   feedback_max_age_s: 900
+  feedback_store_depth: 5000
   deezer_fans_full_scale: 6.9
   deezer_rank_full_scale: 900000
   lb_listeners_full_scale: 5.5

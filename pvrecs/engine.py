@@ -18,6 +18,7 @@ from .models import Artist, Edge, History, Taste, Track
 from .providers import (
     ArtistResolver,
     FeedbackProvider,
+    GenreSource,
     HistoryProvider,
     NoHistory,
     RadioSource,
@@ -36,6 +37,7 @@ class Params:
     per_artist: int = 2
     seed: int | None = None
     popularity: float | None = None  # None = derived from explore
+    unheard: str | None = None  # None | "tracks" (drop played tracks) | "artists" (also drop known artists)
     adv: Advanced = field(default_factory=Advanced)
 
     @property
@@ -138,6 +140,7 @@ class Providers:
     history: HistoryProvider = field(default_factory=NoHistory)
     feedback: list[FeedbackProvider] = field(default_factory=list)  # priority order
     track_similarity: TrackSimilarity | None = None
+    genres: list[GenreSource] = field(default_factory=list)
 
 
 class Radio:
@@ -149,6 +152,7 @@ class Radio:
         self._taste: Taste | None = None
         self.seed_pop: float | None = None
         self.track_boost: dict[str, float] = {}
+        self._genre_query: tuple[list[str], str] = ([], "or")
 
     def history(self) -> History:
         if self._history is None:
@@ -199,8 +203,14 @@ class Radio:
         return self.track_boost.get(t.recording_mbid or "", 0.0) or self.track_boost.get(t.key, 1.0)
 
     # ---------- seed ----------
-    def resolve(self, artist=None, track=None, artist_mbid=None, recording_mbid=None) -> tuple[Artist, Track | None]:
+    def resolve(self, artist=None, track=None, artist_mbid=None, recording_mbid=None, genres=None,
+                genre_op="or") -> tuple[Artist, Track | None]:
         r = self.p.resolver
+        if genres:
+            if genre_op not in ("and", "or"):
+                raise ValueError("genre_op must be 'and' or 'or'")
+            label = f" {genre_op} ".join(genres)
+            return Artist(label, virtual=True), None
         if recording_mbid or track:
             if recording_mbid:
                 t = r.recording_by_mbid(recording_mbid)
@@ -230,16 +240,30 @@ class Radio:
             for src in frontier:
                 if len(g.nodes) - start >= budget[hop]:
                     break
+                if src.artist.virtual:
+                    new += self._genre_neighbours(g, src, p)
+                    continue
                 for prov in self.p.similar:
                     if hop <= prov.max_hop:
                         k = a.fanout.get(hop, a.fanout[max(a.fanout)])
                         new += [self._link(g, src, e, hop) for e in prov.neighbours(src.artist, k)]
-            if hop == 1 and len(g.nodes) - 1 < a.sparse_graph:
+            if hop == 1 and len(g.nodes) - 1 < a.sparse_graph and not seed.virtual:
                 new += self._tag_neighbours(g, frontier[0], p)
             ranked = sorted({n.artist.key: n for n in new if n.hop == hop}.values(), key=lambda n: -n.affinity)
             frontier = ranked[: max(a.frontier_min, a.frontier_base // hop)]
         self.log(f"graph: {len(g.nodes)} artists, hops <= {p.max_hops}")
         return g
+
+    def _genre_neighbours(self, g: Graph, seed: Node, p: Params) -> list[Node]:
+        genres, op = self._genre_query
+        out = []
+        for prov in self.p.genres:
+            found = prov.genre_artists(genres, op, p.pop, self.a.genre_seed_artists)
+            for i, ar in enumerate(found):
+                w = self.a.source_weights.get("genre", 0.9) * (1 - 0.5 * i / max(1, len(found)))
+                out.append(g.add(ar, 1, w, "genre", seed))
+        self.log(f"genre seed: {len(out)} artists for {seed.artist.name}")
+        return out
 
     def _link(self, g: Graph, src: Node, e: Edge, hop: int) -> Node:
         w = self.a.source_weights.get(e.source, 0.7)
@@ -269,6 +293,8 @@ class Radio:
 
     # ---------- candidates ----------
     def _top_tracks(self, artist: Artist) -> list[Track]:
+        if artist.virtual:
+            return []
         out = []
         for prov in self.p.tracks:
             tracks = prov.top_tracks(artist, self.a.top_tracks_limit)
@@ -297,7 +323,15 @@ class Radio:
                     self.track_boost[k] = self.track_boost.get(k, 1.0) * bonus
                 out.append((t, tn))
         # radio around the seed and its closest neighbours brings in artists outside the graph
-        for n in [seed] + [n for n in nodes if n.hop == 1][: self.a.radio_neighbours]:
+        if seed.artist.virtual:
+            genres, op = self._genre_query
+            for prov in self.p.genres:
+                for t in prov.genre_tracks(genres, op, p.pop, self.a.genre_seed_tracks):
+                    tn = g.node_for(t.artist, 1, self.a.source_weights.get("genre", 0.9), "genre", seed)
+                    t.artist = tn.artist
+                    out.append((t, tn))
+        radio_seeds = [] if seed.artist.virtual else [seed]
+        for n in radio_seeds + [n for n in nodes if n.hop == 1][: self.a.radio_neighbours]:
             for prov in self.p.radios:
                 for t in prov.radio(n.artist, p.pop, p.radio_mode):
                     hop = 0 if t.artist.key == seed.artist.key else n.hop + 1
@@ -309,6 +343,7 @@ class Radio:
     # ---------- ranking ----------
     def generate(self, p: Params, **seed_args) -> dict:
         rng = random.Random(p.seed)
+        self._genre_query = (seed_args.get("genres") or [], seed_args.get("genre_op") or "or")
         seed_artist, seed_track = self.resolve(**seed_args)
         self.log(f"seed: {seed_artist.name} ({seed_artist.mbid})" + (f" / {seed_track.title}" if seed_track else ""))
         history = self.history()
@@ -316,7 +351,8 @@ class Radio:
         self.track_boost = self._track_layer() if taste else {}
         g = self.build_graph(seed_artist, p)
         seed = g.nodes[seed_artist.key]
-        self._top_tracks(seed.artist)  # fills seed popularity before anything is weighted
+        if not seed.artist.virtual:
+            self._top_tracks(seed.artist)  # fills seed popularity before anything is weighted
         self.seed_pop = seed.artist.popularity
         cands = self.candidates(g, seed, p, seed_track)
 
@@ -337,6 +373,12 @@ class Radio:
 
         scored = []
         for t, n in merged.values():
+            if n.artist.virtual:
+                continue
+            if p.unheard and history.heard(t):
+                continue
+            if p.unheard == "artists" and history.plays(n.artist):
+                continue
             pen = 1.0
             if history.heard(t):
                 if p.explore >= self.a.heard_skip_explore:
@@ -355,9 +397,11 @@ class Radio:
         for b in bands:  # gentle shuffle so the list doesn't read as a strict ranking
             rng.shuffle(b)
         return {
-            "seed": {"artist": seed_artist.name, "artist_mbid": seed_artist.mbid,
+            "seed": {"artist": None if seed_artist.virtual else seed_artist.name, "artist_mbid": seed_artist.mbid,
                      "track": seed_track.title if seed_track else None, "popularity": self.seed_pop},
-            "explore": p.explore, "popularity": p.popularity, "mode": p.radio_mode, "graph_size": len(g.nodes),
+            "genres": self._genre_query[0] or None, "genre_op": self._genre_query[1] if self._genre_query[0] else None,
+            "explore": p.explore, "popularity": p.popularity, "unheard": p.unheard, "mode": p.radio_mode,
+            "graph_size": len(g.nodes),
             "candidates": len(merged),
             "tracks": [self._row(s, t, n, g, history, taste, self._boost(t)) for b in bands for (s, t, n) in b],
         }

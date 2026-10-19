@@ -26,6 +26,7 @@ from .models import Track
 from .providers import FeedbackProvider, HistoryProvider, NoHistory
 from .providers.deezer import Deezer
 from .providers.feedback import LBFeedback, NavidromeFeedback
+from .providers.feedback_store import JsonFeedbackStore
 from .providers.history import FileHistory, ListenBrainzHistory
 from .providers.lb_playlists import KINDS, LBCreatedFor
 from .providers.listenbrainz import LBSimilar, LBSimilarRecordings, LBTopTracks, TroiRadio, TroiTagRadio
@@ -87,6 +88,10 @@ class Recommender:
         self.http = Http(self.cfg.path(self.cfg.storage.http_cache), ttl=self.cfg.storage.http_ttl_s, offline=offline,
                          min_interval=a.min_interval_s, max_attempts=a.max_attempts, backoff_cap_s=a.backoff_cap_s)
         self.log, self.offline = log, offline
+        st = self.cfg.storage
+        store_path = (self.cfg.path(st.feedback_file) if st.feedback_file
+                      else self.cfg.path(st.save_dir) / "feedback" / "opinions.jsonl")
+        self.feedback_store = JsonFeedbackStore(store_path, self.cfg.advanced.feedback_store_depth)
         self.history = history or self._history_from_config()
         self.feedback = feedback if feedback is not None else self._feedback_from_config()
         self.cache = ResultCache(self.cfg.storage.result_ttl_s, self.cfg.storage.result_cache_size)
@@ -109,7 +114,9 @@ class Recommender:
             return []
         out: list[FeedbackProvider] = []
         for name in f.sources:
-            if name == "lb":
+            if name == "json":
+                out.append(self.feedback_store)
+            elif name == "lb":
                 user = f.lb_user or self.lb_user
                 if user:
                     out.append(LBFeedback(self.http, user, self.token, a.feedback_max_age_s))
@@ -118,11 +125,11 @@ class Recommender:
                 user, pw = os.environ.get("NAVIDROME_USERNAME"), os.environ.get("NAVIDROME_PASSWORD")
                 if url and user and pw:
                     out.append(NavidromeFeedback(self.http, url, user, pw, a.feedback_max_age_s))
-                else:
+                elif url:  # configured but unusable: say why; unconfigured is simply skipped
                     self.log("feedback: navidrome skipped (needs feedback.navidrome_url or $NAVIDROME_URL, "
                              "$NAVIDROME_USERNAME, $NAVIDROME_PASSWORD)")
             else:
-                raise ValueError(f"feedback.sources: unknown source '{name}' (navidrome | lb)")
+                raise ValueError(f"feedback.sources: unknown source '{name}' (json | navidrome | lb)")
         return out
 
     def _providers(self) -> Providers:
@@ -133,32 +140,39 @@ class Recommender:
         tracks = [dz]
         if token:  # LB's popularity endpoint is the only one that needs a token
             tracks.append(LBTopTracks(http, token, a.lb_listeners_full_scale, a.lb_min_listener_share))
+        tags = TroiTagRadio(http, token, a.troi_window_width)
         return Providers(resolver=mb, similar=[LBSimilar(http), dz, mb], tracks=tracks,
-                         radios=[dz, TroiRadio(http, token, a.troi_window_width)], tagger=mb,
-                         tag_radio=TroiTagRadio(http, token, a.troi_window_width), history=self.history,
-                         feedback=self.feedback, track_similarity=LBSimilarRecordings(http))
+                         radios=[dz, TroiRadio(http, token, a.troi_window_width)], tagger=mb, tag_radio=tags,
+                         history=self.history, feedback=self.feedback, track_similarity=LBSimilarRecordings(http),
+                         genres=[tags, dz])
 
     # ------------------------------------------------------------------ radio
     def generate(self, *, artist: str | None = None, track: str | None = None, artist_mbid: str | None = None,
-                 recording_mbid: str | None = None, explore: float | None = None, popularity: float | None = None,
-                 n: int | None = None, per_artist: int | None = None, rng_seed: int | None = None,
-                 auto_popularity: bool = False) -> dict:
+                 recording_mbid: str | None = None, genres: list[str] | None = None, genre_op: str = "or",
+                 explore: float | None = None, popularity: float | None = None, n: int | None = None,
+                 per_artist: int | None = None, rng_seed: int | None = None, auto_popularity: bool = False,
+                 unheard: str | None = None) -> dict:
         """Unset knobs fall back to config defaults. auto_popularity=True ignores a configured default
         popularity so it follows explore."""
         d = self.cfg.defaults
         pop = popularity if popularity is not None else (None if auto_popularity else d.popularity)
         p = Params(explore=d.explore if explore is None else explore, n=n or d.n, per_artist=per_artist or d.per_artist,
-                   seed=rng_seed, popularity=pop, adv=self.cfg.advanced)
+                   seed=rng_seed, popularity=pop, unheard=unheard or d.unheard, adv=self.cfg.advanced)
+        if p.unheard not in (None, "tracks", "artists"):
+            raise ValueError("unheard must be 'tracks' or 'artists'")
         for name, v in (("explore", p.explore), ("popularity", p.popularity)):
             if v is not None and not 0 <= v <= 1:
                 raise ValueError(f"{name} must be in [0, 1]")
+        if sum(x is not None for x in (artist, track, artist_mbid, recording_mbid, genres or None)) != 1:
+            raise ValueError("give exactly one seed: artist, track, artist_mbid, recording_mbid or genres")
         res = self.radio.generate(p, artist=artist, track=track, artist_mbid=artist_mbid,
-                                  recording_mbid=recording_mbid)
+                                  recording_mbid=recording_mbid, genres=genres, genre_op=genre_op)
         return self._remember("radio", res, default_name=self._radio_name(res))
 
     @staticmethod
     def _radio_name(res: dict) -> str:
-        seed = res["seed"]["artist"] + (f"-{res['seed']['track']}" if res["seed"]["track"] else "")
+        seed = res["seed"]["artist"] or ("genre-" + "-".join(res["genres"]))
+        seed += f"-{res['seed']['track']}" if res["seed"]["track"] else ""
         pop = "auto" if res["popularity"] is None else f"{res['popularity']:.2f}"
         return f"{datetime.now(UTC):%Y-%m-%d}_{slug(seed)}_e{res['explore']:.2f}_p{pop}"
 
@@ -177,6 +191,16 @@ class Recommender:
             for w in weeks]}
         name = f"{datetime.now(UTC):%Y-%m-%d}_lb-{kind}_{slug(user)}"
         return self._remember("lb-created-for", res, default_name=name)
+
+    # ------------------------------------------------------------------ feedback store
+    def import_feedback(self, data: dict) -> dict:
+        """Append a batch of loves/hates (see providers/feedback_store.py for the format); dated, newest wins."""
+        summary = self.feedback_store.import_batch(data)
+        self.radio._taste = None  # pick it up on the next generate()
+        return summary
+
+    def feedback_batches(self) -> list[dict]:
+        return self.feedback_store.batches()
 
     # ------------------------------------------------------------------ cache & storage
     def _remember(self, kind: str, res: dict, default_name: str) -> dict:

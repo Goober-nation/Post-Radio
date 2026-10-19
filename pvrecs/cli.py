@@ -41,6 +41,10 @@ def parser() -> argparse.ArgumentParser:
     g.add_argument("--track", help="'Artist - Title'")
     g.add_argument("--artist-mbid")
     g.add_argument("--recording-mbid")
+    g.add_argument("--genre", help="genre seed; comma-separate several (e.g. 'shoegaze,dream pop')")
+    r.add_argument("--genre-op", choices=["or", "and"], default="or", help="several genres: any (or) / all (and)")
+    r.add_argument("--unheard", choices=["tracks", "artists"],
+                   help="drop tracks you've played; 'artists' also drops every artist you've played")
     r.add_argument("-e", "--explore", type=_unit, help="0 = close, 1 = ~3 hops out")
     r.add_argument("-p", "--popularity", type=_unit, help="0 = deep cuts/small artists, 1 = hits")
     r.add_argument("--auto-popularity", action="store_true", help="ignore configured popularity; follow explore")
@@ -59,6 +63,12 @@ def parser() -> argparse.ArgumentParser:
     d.add_argument("--user", help="LB user (default: config / $LISTENBRAINZ_USERNAME)")
     d.add_argument("--kind", choices=["exploration", "jams"], default="exploration")
     d.add_argument("--save", nargs="?", const="", metavar="NAME")
+
+    fb = sub.add_parser("feedback", help="your own loves/hates store")
+    fbs = fb.add_subparsers(dest="fb_cmd", required=True)
+    fbi = fbs.add_parser("import", help="append a JSON batch of loves/hates (dated; newest wins)")
+    fbi.add_argument("file", help="JSON file, or - for stdin")
+    fbs.add_parser("batches", help="list imported batches with dates")
 
     s = sub.add_parser("saved", help="list saved playlists, or print one")
     s.add_argument("name", nargs="?")
@@ -96,15 +106,25 @@ def main(argv=None):
         from .server import create_app
         uvicorn.run(create_app(rec), host=a.host or cfg.server.host, port=a.port or cfg.server.port)
         return
+    if a.cmd == "feedback":
+        if a.fb_cmd == "import":
+            raw = sys.stdin.read() if a.file == "-" else Path(a.file).read_text()
+            out = rec.import_feedback(json.loads(raw))
+        else:
+            out = rec.feedback_batches()
+        print(json.dumps(out, indent=2, ensure_ascii=False))
+        return
     if a.cmd == "saved":
         out = rec.load_saved(a.name) if a.name else rec.list_saved()
         print(json.dumps(out, indent=2, ensure_ascii=False))
         return
 
     if a.cmd == "radio":
+        genres = [x.strip() for x in a.genre.split(",") if x.strip()] if a.genre else None
         res = rec.generate(artist=a.artist, track=a.track, artist_mbid=a.artist_mbid, recording_mbid=a.recording_mbid,
-                           explore=a.explore, popularity=a.popularity, n=a.n, per_artist=a.per_artist,
-                           rng_seed=a.rng_seed, auto_popularity=a.auto_popularity)
+                           genres=genres, genre_op=a.genre_op, unheard=a.unheard, explore=a.explore,
+                           popularity=a.popularity, n=a.n, per_artist=a.per_artist, rng_seed=a.rng_seed,
+                           auto_popularity=a.auto_popularity)
     else:
         res = rec.deep_cuts(a.user, a.kind)
 
