@@ -49,5 +49,5 @@ class LBCreatedFor:
             rec = rec[0] if isinstance(rec, list) else rec
             artist = Artist(t.get("creator") or "", mbid=arts[0]["artist_mbid"] if arts else None)
             out.append(Track(t.get("title") or "", artist, recording_mbid=rec.rstrip("/").rsplit("/", 1)[-1] or None,
-                             sources={"lb-" + "created-for"}))
+                             sources={"lb-created-for"}))
         return out

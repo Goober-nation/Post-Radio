@@ -86,7 +86,7 @@ class Recommender:
         self.lb_user = lb_user or s.lb_user or os.environ.get("LISTENBRAINZ_USERNAME") or None
         self.http = Http(self.cfg.path(self.cfg.storage.http_cache), ttl=self.cfg.storage.http_ttl_s, offline=offline,
                          min_interval=a.min_interval_s, max_attempts=a.max_attempts, backoff_cap_s=a.backoff_cap_s)
-        self.log = log
+        self.log, self.offline = log, offline
         self.history = history or self._history_from_config()
         self.feedback = feedback if feedback is not None else self._feedback_from_config()
         self.cache = ResultCache(self.cfg.storage.result_ttl_s, self.cfg.storage.result_cache_size)
@@ -226,4 +226,4 @@ class Recommender:
     def with_config(self, **section_overrides) -> "Recommender":
         """Copy with e.g. defaults=replace(cfg.defaults, n=20) — handy for per-request tweaks."""
         return Recommender(replace(self.cfg, **section_overrides), token=self.token, lb_user=self.lb_user,
-                           history=self.history, feedback=self.feedback, log=self.log)
+                           history=self.history, feedback=self.feedback, offline=self.offline, log=self.log)

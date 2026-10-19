@@ -9,18 +9,19 @@ from urllib.parse import urlparse
 
 import requests
 
+from .config import Advanced
+
 CACHE_PATH = Path(__file__).resolve().parent.parent / ".cache" / "http.sqlite"
-MIN_INTERVAL = {"musicbrainz.org": 1.1, "api.deezer.com": 0.12, "default": 0.05}  # MB hard limit: 1 req/s
-MAX_ATTEMPTS = {"musicbrainz.org": 8, "default": 4}  # 2+4+...+60s of backoff before giving up on one MB call
 USER_AGENT = "postvinyl-recs/0.1 ( tim.13102006@gmail.com )"
 
 
 class Http:
     def __init__(self, cache_path: Path = CACHE_PATH, ttl: int = 7 * 86400, offline: bool = False,
                  min_interval: dict[str, float] | None = None, max_attempts: dict[str, int] | None = None,
-                 backoff_cap_s: float = 60.0):
-        self.min_interval = min_interval or MIN_INTERVAL
-        self.max_attempts = max_attempts or MAX_ATTEMPTS
+                 backoff_cap_s: float = Advanced.backoff_cap_s):
+        defaults = Advanced()  # rate limits live in config.Advanced only
+        self.min_interval = min_interval or defaults.min_interval_s
+        self.max_attempts = max_attempts or defaults.max_attempts
         self.backoff_cap_s = backoff_cap_s
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(cache_path, check_same_thread=False)

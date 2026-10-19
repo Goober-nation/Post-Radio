@@ -1,6 +1,6 @@
 """ListenBrainz. Similarity, troi LB-radio and tag radio work tokenless; the popularity
 (top-recordings) endpoint needs a token, so LBTopTracks is only wired in when one is set."""
-from troi.recording_search_service import RecordingSearchByArtistService, RecordingSearchByTagService
+from troi.plist import plist
 
 from ..http import Http
 from ..models import Artist, Edge, Track, log_popularity
@@ -52,7 +52,7 @@ class LBSimilar(SimilarArtists):
             return []
         d = self.http.post(f"{LABS}/similar-artists/json", [{"artist_mbids": [artist.mbid], "algorithm": SIMILAR_ALGO}])
         rows = [a for a in (d or []) if a.get("artist_mbid") and a["artist_mbid"] != artist.mbid][:limit]
-        top = max((float(a["score"]) for a in rows), default=1.0)
+        top = max((float(a["score"]) for a in rows), default=1.0) or 1.0
         return [Edge(Artist(a["name"], mbid=a["artist_mbid"]), 0.5 + 0.5 * float(a["score"]) / top, self.name)
                 for a in rows]
 
@@ -106,50 +106,63 @@ class LBTopTracks(TopTracks):
 
 
 class TroiRadio(RadioSource):
-    """troi's LB-radio artist element: the seed + LB-similar artists within a popularity window."""
+    """LB-radio artist search (the endpoint troi's LB Radio uses): the seed + LB-similar artists within a
+    popularity window. Fetched through our Http layer (cache, throttle, backoff); troi's own `plist`
+    selection picks the recordings, so results match troi's semantics."""
 
     name = "troi"
     MODES = {"easy", "medium", "hard"}
 
-    def __init__(self, http: Http, token: str | None = None, window: int = 34):
-        self.search = RecordingSearchByArtistService(auth_token=token)
+    def __init__(self, http: Http, token: str | None = None, window: int = 34, per_artist: int = 8,
+                 similar_artists: int = 6):
+        self.http, self.headers = http, _headers(token)
         self.meta = LBMetadata(http, token)
-        self.window = window
+        self.window, self.per_artist, self.similar_artists = window, per_artist, similar_artists
 
     def radio(self, artist: Artist, popularity: float, mode: str) -> list[Track]:
         if not artist.mbid or mode not in self.MODES:
             return []
         lo, hi = troi_window(popularity, self.window)
-        try:
-            recs, _ = self.search.search(mode, artist.mbid, lo, hi, 8, 6)
-        except RuntimeError:
+        d = self.http.get(f"{API}/lb-radio/artist/{artist.mbid}", headers=self.headers, params={
+            "mode": mode, "max_similar_artists": self.similar_artists,
+            "max_recordings_per_artist": self.per_artist, "pop_begin": lo, "pop_end": hi})
+        if not isinstance(d, dict):
             return []
-        meta = self.meta.recordings([r.mbid for rs in recs.values() for r in rs])
+        picked: dict[str, list[str]] = {}
+        for amb, rows in d.items():
+            pool = plist([r["recording_mbid"] for r in rows if r.get("recording_mbid")])
+            chosen = pool.random_item(lo, hi, self.per_artist) if pool else []
+            picked[amb] = chosen if isinstance(chosen, list) else [chosen]
+        meta = self.meta.recordings([m for ms in picked.values() for m in ms])
+        names = {amb: rows[0].get("similar_artist_name") for amb, rows in d.items() if rows}
         out = []
-        for amb, rs in recs.items():
-            for r in rs:
-                t = meta.get(r.mbid)
+        for amb, mbids in picked.items():
+            for m in mbids:
+                t = meta.get(m)
                 if t:
-                    t.artist = artist if amb == artist.mbid else Artist(r.artist_credit.name, mbid=amb)
+                    t.artist = artist if amb == artist.mbid else Artist(names.get(amb) or t.artist.name, mbid=amb)
                     t.popularity, t.sources = 1 - (lo + hi) / 200, {"troi"}
                     out.append(t)
         return out
 
 
 class TroiTagRadio(TagRadio):
+    """LB-radio tag search (troi's tag element endpoint), through our Http layer."""
+
     def __init__(self, http: Http, token: str | None = None, window: int = 34):
-        self.search = RecordingSearchByTagService(auth_token=token)
+        self.http, self.headers = http, _headers(token)
         self.meta = LBMetadata(http, token)
         self.window = window
 
-    def artists_for_tags(self, tags: list[str], popularity: float, limit: int) -> list[Artist]:
+    def recordings_for_tags(self, tags: list[str], popularity: float, limit: int) -> list[str]:
         lo, hi = troi_window(popularity, self.window)
-        try:
-            mbids = [r.mbid for r in self.search.search(tags, "or", lo, hi, limit)]
-        except RuntimeError:
-            return []
+        d = self.http.get(f"{API}/lb-radio/tags", headers=self.headers, params={
+            "tag": tags, "operator": "or", "pop_begin": lo, "pop_end": hi, "count": limit})
+        return [r["recording_mbid"] for r in d or [] if r.get("recording_mbid")] if isinstance(d, list) else []
+
+    def artists_for_tags(self, tags: list[str], popularity: float, limit: int) -> list[Artist]:
         seen: dict[str, Artist] = {}
-        for t in self.meta.recordings(mbids).values():
+        for t in self.meta.recordings(self.recordings_for_tags(tags, popularity, limit)).values():
             seen.setdefault(t.artist.key, t.artist)
         return list(seen.values())
 

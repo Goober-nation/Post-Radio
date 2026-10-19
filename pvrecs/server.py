@@ -15,6 +15,7 @@ class RadioRequest(BaseModel):
     n: int | None = Field(None, ge=1, le=500)
     per_artist: int | None = Field(None, ge=1)
     rng_seed: int | None = None
+    auto_popularity: bool = False  # ignore configured default popularity; follow explore
 
 
 class SaveRequest(BaseModel):

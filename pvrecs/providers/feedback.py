@@ -2,6 +2,7 @@
 import hashlib
 import secrets
 
+from ..config import Advanced
 from ..http import Http
 from ..models import Feedback, rating_score
 from . import FeedbackProvider
@@ -14,7 +15,8 @@ class LBFeedback(FeedbackProvider):
 
     name = "lb"
 
-    def __init__(self, http: Http, user: str, token: str | None = None, max_age_s: int = 900, cap: int = 2000):
+    def __init__(self, http: Http, user: str, token: str | None = None,
+                 max_age_s: int = Advanced.feedback_max_age_s, cap: int = 2000):
         self.http, self.user, self.max_age, self.cap = http, user, max_age_s, cap
         self.headers = {"Authorization": f"Token {token}"} if token else None
 
@@ -45,8 +47,8 @@ class NavidromeFeedback(FeedbackProvider):
 
     name = "navidrome"
 
-    def __init__(self, http: Http, url: str, user: str, password: str, max_age_s: int = 900, page: int = 500,
-                 max_songs: int = 200_000):
+    def __init__(self, http: Http, url: str, user: str, password: str,
+                 max_age_s: int = Advanced.feedback_max_age_s, page: int = 500, max_songs: int = 200_000):
         self.http, self.url, self.user, self.password = http, url.rstrip("/"), user, password
         self.max_age, self.page, self.max_songs = max_age_s, page, max_songs
 

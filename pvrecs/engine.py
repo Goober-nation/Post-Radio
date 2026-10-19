@@ -3,7 +3,8 @@
 explore in [0, 1]: how far out in the graph (0 = seed and closest neighbours, 1 = ~3 hops).
 popularity in [0, 1] (optional): 1 = hits by big artists, 0 = deep cuts by small ones.
   Unset, it follows explore and stays near the seed's own audience size.
-Only models.* types cross into this module; every source is behind a providers.* interface.
+Data in and out is models.* types only (no raw API payloads); every source sits behind a providers.*
+interface, and every tunable comes from config.Advanced.
 """
 import math
 import random

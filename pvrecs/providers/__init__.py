@@ -48,7 +48,8 @@ class RadioSource(ABC):
 
 class Tagger(ABC):
     @abstractmethod
-    def tags(self, artist: Artist) -> list[str]: ...
+    def tags(self, artist: Artist, n: int = 4) -> list[str]:
+        """Up to n genre/tag names for the artist, strongest first."""
 
 
 class TagRadio(ABC):
