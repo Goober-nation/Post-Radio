@@ -27,8 +27,11 @@ def _parse_mix(text: str | None) -> dict[str, float] | None:
     for part in text.split(","):
         k, sep, v = part.partition("=")
         if not sep:
-            raise SystemExit(f"--mix: expected STREAM=X, got '{part}'")
-        out[k.strip()] = float(v)
+            raise SystemExit(f"pvrecs: error: --mix expects STREAM=X, got '{part}'")
+        try:
+            out[k.strip()] = float(v)
+        except ValueError:
+            raise SystemExit(f"pvrecs: error: --mix {k.strip()}: '{v}' is not a number (expected 0..1)") from None
     return out
 
 

@@ -3,7 +3,7 @@ import pytest
 from fakes import Resolver, Similar, Tracks
 from test_api import rec  # noqa: F401  (fixture)
 
-from pvrecs.engine import Params, Providers, Radio
+from pvrecs.engine import Graph, Params, Providers, Radio
 from pvrecs.models import Artist, Track
 
 
@@ -11,30 +11,51 @@ def radio():
     return Radio(Providers(resolver=Resolver(), similar=[Similar()], tracks=[Tracks()]), log=lambda *_: None)
 
 
-def tracks(n, src):
-    return [Track(f"t{i}", Artist("A"), popularity=i / (n - 1), sources={src}) for i in range(n)]
+def entries(n, src, artists=1):
+    """n candidates spread over `artists` artists, popularity 0..1."""
+    nodes = [Graph().add(Artist(f"A{i}"), 1, 1.0, "lb") for i in range(artists)]
+    return [(Track(f"t{i}", nodes[i % artists].artist, popularity=i / (n - 1), sources={src}), nodes[i % artists])
+            for i in range(n)]
 
 
-def test_cut_keeps_closest_to_target_and_uses_nominal_size():
+def test_cap_applies_to_the_whole_stream_nearest_target():
     r = radio()
     p = Params(popularity=0.0, mix={"deezer-top": 0.2})
-    kept = r._cut(tracks(100, "deezer-top"), "deezer-top", p, full=100)
-    assert len(kept) == 20 and max(t.popularity for t in kept) < 0.2  # deep cuts, not the top 20
-    p_hits = Params(popularity=1.0, mix={"deezer-top": 0.2})
-    assert min(t.popularity for t in r._cut(tracks(100, "deezer-top"), "deezer-top", p_hits, 100)) > 0.8
-    assert len(r._cut(tracks(30, "deezer-top"), "deezer-top", p, full=100)) == 20  # cap is of the nominal 100
+    kept = r._cut(entries(100, "deezer-top", artists=10), "deezer-top", p)
+    assert len(kept) == 20  # 20% of all 100 candidates, not 20 per artist
+    assert max(t.popularity for t, _ in kept) < 0.2  # deep cuts, since -p 0
+    hits = r._cut(entries(100, "deezer-top", artists=10), "deezer-top", Params(popularity=1.0, mix={"deezer-top": 0.2}))
+    assert min(t.popularity for t, _ in hits) > 0.8
 
 
-def test_multipliers_are_independent():
+def test_ordered_stream_keeps_its_order():
     r = radio()
-    p = Params(mix={"deezer-top": 0.0, "troi": 1.0})
-    assert r._cut(tracks(10, "deezer-top"), "deezer-top", p) == []
-    assert len(r._cut(tracks(10, "troi"), "troi", p)) == 10
-    assert len(r._cut(tracks(10, "lb"), "lb", p)) == 10  # unmentioned = 1
+    es = entries(10, "track-sim")[::-1]  # most-similar-first order from LB; popularity irrelevant
+    assert r._cut(es, "track-sim", Params(popularity=0.0, mix={"track-sim": 0.3})) == es[:3]
+
+
+def test_multipliers_are_independent_and_unknown_streams_warn():
+    logs = []
+    r = Radio(Providers(resolver=Resolver(), similar=[Similar()], tracks=[Tracks()]), log=logs.append)
+    p = Params(mix={"deezer-top": 0.0, "troi": 1.0, "lb": 1.0})
+    assert r._cut(entries(10, "deezer-top"), "deezer-top", p) == []
+    assert len(r._cut(entries(10, "troi"), "troi", p)) == 10
+    assert len(r._cut(entries(10, "mystery"), "mystery", p)) == 10
+    r._cut(entries(10, "mystery"), "mystery", p)
+    assert sum("mystery" in m for m in logs) == 1  # warned once
+
+
+def test_mix_parse_errors_name_the_flag():
+    from pvrecs.cli import _parse_mix
+
+    with pytest.raises(SystemExit, match="--mix troi: 'x' is not a number"):
+        _parse_mix("troi=x")
+    with pytest.raises(SystemExit, match="--mix expects STREAM=X"):
+        _parse_mix("troi")
 
 
 def test_zero_mix_removes_stream_from_results():
-    res = radio().generate(Params(0.5, n=10, seed=1, mix={"lb": 0.0}), artist="Seed")
+    res = radio().generate(Params(0.5, n=10, seed=1, mix={"lb": 0.0, "deezer-top": 1.0}), artist="Seed")
     assert res["tracks"] == [] and res["mix"] == {"lb": 0.0}  # the fake catalogue is all 'lb'
 
 

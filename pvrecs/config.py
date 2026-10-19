@@ -54,8 +54,9 @@ class Server:
 # ---------------------------------------------------------------- advanced (algorithm constants)
 @dataclass
 class Advanced:
-    # stream caps, 0..1 (1 = all a stream offers, 0 = off). Each cuts only its own stream, keeping the tracks
-    # nearest the popularity target: deezer-top 0.2 = at most 20 of an artist's top 100. Per run: --mix.
+    # stream caps, 0..1 (1 = all of it, 0 = off), applied to each whole stream (all artists / calls together):
+    # deezer-top 0.2 = keep 20% of all Deezer catalogue candidates, those nearest the popularity target.
+    # track-sim keeps its most-similar-first order instead. Each cap only touches its own stream. Per run: --mix.
     mix: dict[str, float] = field(default_factory=lambda: {
         "deezer-top": 1.0,  # Deezer artist top tracks (catalogue)
         "lb": 1.0,  # ListenBrainz popularity catalogue (needs a token)

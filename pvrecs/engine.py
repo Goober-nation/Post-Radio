@@ -167,6 +167,7 @@ class Radio:
         self.seed_pop: float | None = None
         self.track_boost: dict[str, float] = {}
         self._genre_query: tuple[list[str], str] = ([], "or")
+        self._warned_streams: set[str] = set()
 
     def history(self) -> History:
         version = self.p.history.version()
@@ -373,18 +374,13 @@ class Radio:
         catalogue = {n.artist.key: tracks for n, tracks in zip(shortlist, fetched, strict=True)}
         nodes = sorted(shortlist, key=lambda n: -self.artist_weight(n, p))
         nodes = nodes[:max(self.a.candidate_artists_min, p.n // 2)]
-        out = []
+        # every candidate is filed under an explicit stream label; caps apply per whole stream at the end
+        streams: dict[str, list[tuple[Track, Node]]] = defaultdict(list)
         for n in nodes:
-            tracks = catalogue[n.artist.key]
-            by_source: dict[str, list[Track]] = defaultdict(list)
-            for t in tracks:
-                by_source[next(iter(t.sources), "")].append(t)
-            for src, ts in by_source.items():  # each catalogue stream (deezer-top, lb) cut on its own
-                out += [(t, n) for t in self._cut(ts, src, p, self.a.top_tracks_limit)]
+            for t in catalogue[n.artist.key]:
+                streams[next(iter(t.sources), "")].append((t, n))  # catalogue tracks carry one source each
         if seed_track and self.p.track_similarity:
-            sims = self.p.track_similarity.similar(seed_track, self.a.seed_track_similar_limit)
-            keep = {id(t) for t in self._cut([t for t, _ in sims], "track-sim", p, self.a.seed_track_similar_limit)}
-            for t, w in (x for x in sims if id(x[0]) in keep):
+            for t, w in self.p.track_similarity.similar(seed_track, self.a.seed_track_similar_limit):
                 hop = 0 if t.artist.key == seed.artist.key else 1
                 tn = g.node_for(t.artist, hop, self.a.seed_track_affinity * w, "track-sim", seed)
                 t.artist = tn.artist
@@ -393,42 +389,52 @@ class Radio:
                 bonus = 1 + self.a.seed_track_boost * w
                 for k in filter(None, (t.recording_mbid, t.key)):
                     self.track_boost[k] = self.track_boost.get(k, 1.0) * bonus
-                out.append((t, tn))
-        # radio around the seed and its closest neighbours brings in artists outside the graph
+                streams["track-sim"].append((t, tn))
         if seed.artist.virtual:
             genres, op = self._genre_query
             for prov in self.p.genres:
-                tagged = prov.genre_tracks(genres, op, p.pop, self.a.genre_seed_tracks)
-                for t in self._cut(tagged, "lb-tags", p, self.a.genre_seed_tracks):
+                for t in prov.genre_tracks(genres, op, p.pop, self.a.genre_seed_tracks):
                     tn = g.node_for(t.artist, 1, self.a.source_weights.get("genre", 0.9), "genre", seed)
                     t.artist = tn.artist
-                    out.append((t, tn))
+                    streams["lb-tags"].append((t, tn))
+        # radio around the seed and its closest neighbours brings in artists outside the graph
         radio_seeds = [] if seed.artist.virtual else [seed]
         jobs = [(n, prov) for n in radio_seeds + [n for n in nodes if n.hop == 1][: self.a.radio_neighbours]
                 for prov in self.p.radios]
         # one RNG per stream, derived from the run seed: reproducible regardless of thread timing
         seeds = [rng.random() for _ in jobs]
-        streams = self._map(lambda ij: ij[1][1].radio(ij[1][0].artist, p.pop, p.radio_mode,
-                                                      random.Random(seeds[ij[0]])), list(enumerate(jobs)))
-        for (n, _), tracks in zip(jobs, streams, strict=True):
-            src = next(iter(tracks[0].sources), "") if tracks else ""
-            for t in self._cut(tracks, src, p):  # radio streams: share of what that call returned
+        fetched_radio = self._map(lambda ij: ij[1][1].radio(ij[1][0].artist, p.pop, p.radio_mode,
+                                                            random.Random(seeds[ij[0]])), list(enumerate(jobs)))
+        for (n, _), tracks in zip(jobs, fetched_radio, strict=True):
+            for t in tracks:
                 hop = 0 if t.artist.key == seed.artist.key else n.hop + 1
                 rn = g.node_for(t.artist, hop, n.affinity * self.a.source_weights["radio"], "radio", n)
                 t.artist = rn.artist
-                out.append((t, rn))
+                streams[next(iter(t.sources), "")].append((t, rn))
+        out: list[tuple[Track, Node]] = []
+        for name, entries in streams.items():
+            out += self._cut(entries, name, p)
         return out
 
-    def _cut(self, tracks: list[Track], source: str, p: Params, full: int | None = None) -> list[Track]:
-        """Apply the stream's mix multiplier: keep round(full * m) tracks, those closest to the popularity
-        target (so a low -p still reaches deep cuts). full = the stream's nominal size (default: as returned)."""
-        m = p.mix.get(source, 1.0)
+    # streams whose order already means something are cut by order, not by popularity distance
+    ORDERED_STREAMS = {"track-sim"}  # LB returns similar recordings most-similar first
+
+    def _cut(self, entries: list[tuple[Track, Node]], stream: str, p: Params) -> list[tuple[Track, Node]]:
+        """Apply the stream's cap to the whole stream: keep round(len * cap) candidates. Most streams keep
+        those nearest the popularity target (so a low -p still reaches deep cuts); ordered streams keep the
+        first ones. A stream with no configured cap is kept whole, with a one-time warning."""
+        if stream not in p.mix:
+            if stream not in self._warned_streams:
+                self._warned_streams.add(stream)
+                self.log(f"mix: no cap configured for stream '{stream}', keeping all of it")
+            return entries
+        m = p.mix[stream]
         if m >= 1.0:
-            return tracks
-        cap = round((full if full is not None else len(tracks)) * max(0.0, m))
-        if cap >= len(tracks):
-            return tracks
-        return sorted(tracks, key=lambda t: abs(t.popularity - p.pop))[:cap]
+            return entries
+        cap = round(len(entries) * max(0.0, m))
+        if stream in self.ORDERED_STREAMS:
+            return entries[:cap]
+        return sorted(entries, key=lambda e: abs(e[0].popularity - p.pop))[:cap]
 
     # ---------- ranking ----------
     def generate(self, p: Params, **seed_args) -> dict:
