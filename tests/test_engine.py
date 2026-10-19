@@ -23,6 +23,9 @@ class FakeLB:
     def radio_artist(self, *a):
         return {}
 
+    def radio_tags(self, *a):
+        return []
+
     def recording_metadata(self, mbids):
         return {}
 
@@ -31,6 +34,12 @@ class FakeLB:
 
 
 class FakeMB:
+    def tags(self, mbid):
+        return []
+
+    def recording_titles(self, mbid):
+        return set()
+
     def find_artist(self, name):
         return {"Seed": ("S", "Seed")}.get(name)
 
@@ -141,3 +150,54 @@ def test_deezer_name_collision_resolved_by_shared_titles():
     assert r._dz_match(n) == (2, 5000)
     n2 = Graph().add("Alpha", 1, 1.0, "deezer")  # no MBID: fall back to the most-followed match
     assert r._dz_match(n2) == (1, 9_000_000)
+
+
+def test_popularity_slider_overrides_explore():
+    assert Params(0.0, popularity=0.1).target_pop == 0.1
+    assert Params(1.0, popularity=0.9).target_pop == 0.9
+    assert Params(0.5).pop == Params(0.5, popularity=None).target_pop
+    assert Params(0.0, popularity=0.0).target_artist_pop < Params(0.0).target_artist_pop
+
+
+def test_popularity_slider_changes_picks_at_fixed_explore():
+    def avg(r):
+        return sum(t["popularity"] for t in r["tracks"]) / len(r["tracks"])
+
+    hits = radio().generate(Params(0.5, n=10, seed=1, popularity=1.0), artist="Seed")
+    cuts = radio().generate(Params(0.5, n=10, seed=1, popularity=0.0), artist="Seed")
+    assert avg(cuts) < avg(hits)
+
+
+def test_troi_window_tracks_popularity():
+    r = radio()
+    assert r._troi_window(Params(popularity=1.0)) == (0, 34)  # troi percentile 0 = most played
+    assert r._troi_window(Params(popularity=0.0))[1] == 100
+    assert r._troi_window(Params(0.0))[0] < r._troi_window(Params(1.0))[0]
+
+
+def test_obscure_seed_keeps_ceiling_unless_slider_set():
+    p = Params(0.5)
+    assert artist_pop_fit(0.9, p, seed_pop=0.2) < artist_pop_fit(0.9, p, seed_pop=None)
+    pinned = Params(0.5, popularity=1.0)
+    assert artist_pop_fit(0.9, pinned, seed_pop=0.2) == artist_pop_fit(0.9, pinned)
+
+
+class TagLB(FakeLB):
+    SIM = {**FakeLB.SIM, "S": []}  # seed with no similarity edges at all
+
+    def radio_tags(self, tags, lo, hi, n):
+        return ["r1", "r2"] if tags == ["shoegaze"] else []
+
+    def recording_metadata(self, mbids):
+        return {m: {"artist": {"artists": [{"name": "Beta", "artist_mbid": "B"}]}} for m in mbids}
+
+
+class TagMB(FakeMB):
+    def tags(self, mbid):
+        return ["shoegaze"] if mbid == "S" else []
+
+
+def test_sparse_seed_falls_back_to_tag_neighbours():
+    r = Radio(TagLB(), TagMB(), FakeDZ(), log=lambda *_: None)
+    g = r.build_graph("Seed", "S", Params(0.3))
+    assert "beta" in g.nodes and g.nodes["beta"].via == {"tag"} and g.nodes["beta"].parent == "Seed"

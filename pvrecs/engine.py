@@ -15,7 +15,8 @@ from .sources import Deezer, ListenBrainz, MusicBrainz, Track, norm
 JUNK_TITLE = re.compile(r"^\[|\b(live|demo|remix|edit|instrumental|acoustic version|karaoke|session|rehearsal"
                         r"|bootleg)\b|\(\d{4}|\d{4}[‐-]\d\d", re.I)
 MAX_SOURCE_SHARE = 0.5  # no single-source track type may fill more than half the list
-EDGE_WEIGHT = {"lb": 1.0, "deezer": 0.85, "mb": 0.6, "troi": 0.8}
+EDGE_WEIGHT = {"lb": 1.0, "deezer": 0.85, "mb": 0.6, "troi": 0.8, "tag": 0.5}
+SPARSE_GRAPH = 8  # fewer hop-1 artists than this -> pull in tag neighbours
 
 
 @dataclass
@@ -41,6 +42,7 @@ class Params:
     n: int = 50
     per_artist: int = 2
     seed: int | None = None
+    popularity: float | None = None  # 0 = deep cuts/obscure artists, 1 = hits; None = derived from explore
 
     @property
     def max_hops(self) -> int:
@@ -51,12 +53,19 @@ class Params:
         return 3 * self.explore
 
     @property
+    def pop(self) -> float:
+        """Effective popularity level: 1 = hits, 0 = deep cuts. Defaults to following explore."""
+        return self.popularity if self.popularity is not None else 1 - 0.85 * self.explore
+
+    @property
     def target_pop(self) -> float:
-        return 1 - 0.85 * self.explore
+        return self.pop
 
     @property
     def target_artist_pop(self) -> float:
-        return 0.95 - 0.6 * self.explore
+        if self.popularity is None:
+            return 0.95 - 0.6 * self.explore
+        return 0.35 + 0.6 * self.popularity
 
     @property
     def troi_mode(self) -> str:
@@ -76,11 +85,16 @@ def dz_pop(fans: int) -> float:
     return min(1.0, math.log10(1 + fans) / 6.9)
 
 
-def artist_pop_fit(pop: float | None, p: Params) -> float:
+def artist_pop_fit(pop: float | None, p: Params, seed_pop: float | None = None) -> float:
     if pop is None:
         return 0.7
+    ceiling = p.target_artist_pop
+    if p.popularity is None and seed_pop is not None:
+        # without an explicit slider, stay roughly in the seed's league: an obscure seed shouldn't
+        # drift to stadium acts just because they're 2 hops away
+        ceiling = min(ceiling, seed_pop + 0.2)
     # only penalise being *more* popular than the target; obscure is never punished at low explore
-    over = max(0.0, pop - p.target_artist_pop)
+    over = max(0.0, pop - ceiling)
     return math.exp(-(over ** 2) / 0.03)
 
 
@@ -110,6 +124,7 @@ class Graph:
 class Radio:
     def __init__(self, lb: ListenBrainz, mb: MusicBrainz, dz: Deezer, log=print):
         self.lb, self.mb, self.dz, self.log = lb, mb, dz, log
+        self.seed_pop: float | None = None
         self._history = None
 
     def history(self):
@@ -136,7 +151,10 @@ class Radio:
                 raise ValueError(f"track not found on MusicBrainz: {track}")
             return r["artist"], r["artist_mbid"], Track(r["artist"], r["title"], r["artist_mbid"], r["recording_mbid"])
         if artist_mbid:
-            return self.mb.artist_name(artist_mbid) or artist_mbid, artist_mbid, None
+            name = self.mb.artist_name(artist_mbid)
+            if not name:
+                raise ValueError(f"could not resolve artist {artist_mbid} on MusicBrainz (busy? retry)")
+            return name, artist_mbid, None
         if artist:
             found = self.mb.find_artist(artist)
             if not found:
@@ -182,12 +200,31 @@ class Radio:
                 if n.hop == hop and kk not in seen:
                     seen.add(kk)
                     frontier.append(kk)
+            if hop == 1 and len(g.nodes) < SPARSE_GRAPH and mbid:
+                nxt += self._tag_neighbours(g, name, mbid, p)
+                frontier += [norm(n.name) for n in nxt if norm(n.name) not in frontier and n.hop == 1]
             frontier = frontier[: max(4, 16 // hop)]
         self.log(f"graph: {len(g.nodes)} artists, hops<= {p.max_hops}")
         return g
 
+    def _tag_neighbours(self, g: Graph, seed_name: str, mbid: str, p: Params) -> list[Node]:
+        """Sparse seed: borrow neighbours from artists sharing its MB tags, via troi's LB tag radio."""
+        tags = self.mb.tags(mbid)
+        if not tags:
+            return []
+        lo, hi = self._troi_window(p)
+        rec_mbids = self.lb.radio_tags(tags, lo, hi, 60)
+        meta = self.lb.recording_metadata(rec_mbids) if rec_mbids else {}
+        out = []
+        for m in meta.values():
+            for a in ((m.get("artist") or {}).get("artists") or [])[:1]:
+                if a.get("artist_mbid") and a["artist_mbid"] != mbid:
+                    out.append(g.add(a["name"], 1, EDGE_WEIGHT["tag"], "tag", mbid=a["artist_mbid"], parent=seed_name))
+        self.log(f"sparse seed: added {len(out)} tag neighbours from {tags}")
+        return out
+
     def artist_weight(self, n: Node, p: Params, known: dict[str, int]) -> float:
-        w = n.affinity * hop_fit(n.hop, p) * artist_pop_fit(n.popularity, p)
+        w = n.affinity * hop_fit(n.hop, p) * artist_pop_fit(n.popularity, p, self.seed_pop)
         listens = known.get(n.mbid or "", 0) or known.get("n:" + norm(n.name), 0)
         if listens:
             fam = min(1.0, math.log1p(listens) / math.log(200))
@@ -238,6 +275,7 @@ class Radio:
                 hop = 0 if amb == seed_mbid else 1
                 node = self._node_for(g, name, hop, 0.8, "troi", mbid=amb)
                 t = Track(name, title, amb, r.mbid, popularity=1 - (lo + hi) / 200, sources={"troi"})
+                node.parent = node.parent or (seed_name if hop else None)
                 out.append((t, node))
         return out
 
@@ -254,6 +292,8 @@ class Radio:
         if not cands or not n.mbid:
             return cands[0] if cands else None
         lb_titles = {norm(r["recording_name"]) for r in self.lb.top_recordings(n.mbid)[:200]}
+        if not lb_titles:  # obscure artists often have no LB listens; MB still knows their songs
+            lb_titles = self.mb.recording_titles(n.mbid)
         if not lb_titles:
             return cands[0] if len(cands) == 1 else None
         for did, fans in cands:
@@ -263,8 +303,10 @@ class Radio:
         return None
 
     def _troi_window(self, p: Params) -> tuple[int, int]:
-        hi = round(100 - 70 * p.explore)
-        return max(0, hi - 35), hi
+        """troi popularity percentiles: 0 = an artist's most-played recordings, 100 = least."""
+        centre = round(100 * (1 - p.pop))
+        lo = min(max(0, centre - 17), 66)
+        return lo, lo + 34
 
     def _node_for(self, g: Graph, name, hop, affinity, src, mbid=None, parent=None) -> Node:
         return g.nodes.get(norm(name)) or g.add(name, hop, affinity, src, mbid=mbid, parent=parent)
@@ -300,10 +342,15 @@ class Radio:
     # ---------- ranking ----------
     def generate(self, p: Params, **seed) -> dict:
         rng = random.Random(p.seed)
+        self.seed_pop = None
         name, mbid, seed_track = self.resolve(**seed)
         self.log(f"seed: {name} ({mbid})" + (f" / track {seed_track.title}" if seed_track else ""))
         known, heard = self.history()
         g = self.build_graph(name, mbid, p)
+        seed_node = g.nodes[norm(name)]
+        if mbid and seed_node.lb_pop is None:
+            self._lb_tracks(seed_node)  # sets lb_pop
+        self.seed_pop = seed_node.popularity
         cands = self.candidates(g, p, name, mbid, known)
 
         merged: dict[str, tuple[Track, Node]] = {}
@@ -365,6 +412,6 @@ class Radio:
         return {
             "seed": {"artist": name, "artist_mbid": mbid,
                      "track": seed_track.title if seed_track else None},
-            "explore": p.explore, "mode": p.troi_mode, "graph_size": len(g.nodes),
+            "explore": p.explore, "popularity": p.popularity, "mode": p.troi_mode, "graph_size": len(g.nodes),
             "candidates": len(merged), "tracks": [t for b in bands for t in b],
         }

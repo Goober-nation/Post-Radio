@@ -26,6 +26,8 @@ def main(argv=None):
     g.add_argument("--artist-mbid")
     g.add_argument("--recording-mbid")
     ap.add_argument("-e", "--explore", type=float, default=0.5, help="0 = close & popular, 1 = far & deep cuts")
+    ap.add_argument("-p", "--popularity", type=float,
+                    help="0 = deep cuts by obscure artists, 1 = hits; default follows --explore")
     ap.add_argument("-n", type=int, default=50)
     ap.add_argument("--per-artist", type=int, default=2)
     ap.add_argument("--rng-seed", type=int)
@@ -34,13 +36,15 @@ def main(argv=None):
     a = ap.parse_args(argv)
     if not 0 <= a.explore <= 1:
         ap.error("--explore must be in [0, 1]")
+    if a.popularity is not None and not 0 <= a.popularity <= 1:
+        ap.error("--popularity must be in [0, 1]")
 
     load_env(Path(__file__).resolve().parent.parent / ".env")
     http = Http(offline=a.offline)
     log = (lambda *_: None) if a.json else (lambda m: print(f"# {m}", file=sys.stderr))
     radio = Radio(ListenBrainz(http, os.environ.get("LISTENBRAINZ_TOKEN"), os.environ.get("LISTENBRAINZ_USERNAME")),
                   MusicBrainz(http), Deezer(http), log=log)
-    res = radio.generate(Params(a.explore, a.n, a.per_artist, a.rng_seed), artist=a.artist, track=a.track,
+    res = radio.generate(Params(a.explore, a.n, a.per_artist, a.rng_seed, a.popularity), artist=a.artist, track=a.track,
                          artist_mbid=a.artist_mbid, recording_mbid=a.recording_mbid)
     if a.json:
         print(json.dumps(res, indent=2, ensure_ascii=False))

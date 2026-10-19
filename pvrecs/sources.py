@@ -1,7 +1,7 @@
 """Clients for ListenBrainz (via troi where it has a service), MusicBrainz and Deezer."""
 from dataclasses import dataclass, field
 
-from troi.recording_search_service import RecordingSearchByArtistService
+from troi.recording_search_service import RecordingSearchByArtistService, RecordingSearchByTagService
 
 from .http import Http
 
@@ -34,6 +34,7 @@ class ListenBrainz:
         self.http, self.user = http, user
         self.headers = {"Authorization": f"Token {token}"} if token else None
         self.troi_search = RecordingSearchByArtistService(auth_token=token)
+        self.troi_tags = RecordingSearchByTagService(auth_token=token)
 
     def similar_artists(self, mbid: str, limit: int = 25) -> list[tuple[str, str, float]]:
         data = self.http.post(f"{LB_LABS}/similar-artists/json", [{"artist_mbids": [mbid], "algorithm": SIMILAR_ALGO}])
@@ -54,6 +55,13 @@ class ListenBrainz:
         except RuntimeError:
             return {}
         return recs
+
+    def radio_tags(self, tags: list[str], pop_begin: int, pop_end: int, n: int) -> list[str]:
+        """troi's LB-radio tag search -> recording MBIDs (fallback when an artist has no similarity edges)."""
+        try:
+            return [r.mbid for r in self.troi_tags.search(tags, "or", pop_begin, pop_end, n)]
+        except RuntimeError:
+            return []
 
     def recording_metadata(self, mbids: list[str]) -> dict:
         out = {}
@@ -111,6 +119,15 @@ class MusicBrainz:
     def artist_name(self, mbid: str) -> str | None:
         d = self.http.get(f"{MB}/artist/{mbid}", params={"fmt": "json"})
         return (d or {}).get("name")
+
+    def tags(self, mbid: str, n: int = 4) -> list[str]:
+        d = self.http.get(f"{MB}/artist/{mbid}", params={"inc": "tags genres", "fmt": "json"})
+        tags = sorted((d or {}).get("tags") or [], key=lambda t: -t["count"])
+        return [t["name"] for t in tags if t["count"] > 0][:n]
+
+    def recording_titles(self, mbid: str) -> set[str]:
+        d = self.http.get(f"{MB}/recording", params={"artist": mbid, "limit": 100, "fmt": "json"})
+        return {norm(r["title"]) for r in (d or {}).get("recordings") or []}
 
     def find_recording(self, artist: str, title: str) -> dict | None:
         q = f'recording:"{title}" AND artist:"{artist}"'
