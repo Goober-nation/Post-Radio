@@ -72,3 +72,37 @@ def test_one_shared_pool_bounds_concurrency():
     with ThreadPoolExecutor(2) as outer:  # two callers sharing one Radio
         list(outer.map(lambda _: r.build_graph(Artist("Seed", mbid="S"), Params(1.0)), range(2)))
     assert peak[0] <= 2 and r._pool() is r._pool()
+
+
+def test_single_match_falls_back_to_mb_when_free_titles_disagree():
+    dz = Deezer(one_namesake(["Album Track", "x"]), cheap_titles=lambda a: {"livebootleg"},
+                known_titles=lambda a: {"albumtrack"})
+    assert dz.resolve(Artist("Bilal", mbid="m")) == 9
+
+
+def test_failed_match_is_retried_after_memo_ttl(monkeypatch):
+    http = one_namesake(["x"])
+    dz = Deezer(http, cheap_titles=lambda a: {"nope"}, memo_ttl_s=10)
+    assert dz.resolve(Artist("Bilal", mbid="m")) is None
+    http.routes["/artist/9/top"] = {"data": [dz_track(1, 9, "Nope")]}
+    assert dz.resolve(Artist("Bilal", mbid="m")) is None  # still memoised
+    now = time.monotonic()
+    monkeypatch.setattr("pvrecs.providers.deezer.time.monotonic", lambda: now + 11)
+    assert dz.resolve(Artist("Bilal", mbid="m")) == 9
+
+
+def test_nested_map_runs_inline_instead_of_deadlocking():
+    r = Radio(Providers(resolver=Resolver(), similar=[Similar()], tracks=[Tracks()]), log=lambda *_: None)
+    r.a.fetch_workers = 1
+    out = r._map(lambda x: sum(r._map(lambda y: y * x, [1, 2, 3])), [1, 2])  # would hang with 1 worker
+    assert out == [6, 12]
+
+
+def test_close_stops_threads_and_is_reusable():
+    with Radio(Providers(resolver=Resolver(), similar=[Similar()], tracks=[Tracks()]), log=lambda *_: None) as r:
+        first = r._pool()
+        r._map(lambda x: x, [1, 2])
+    assert r._executor is None and first._shutdown
+    r.close()  # idempotent
+    assert r._map(lambda x: x + 1, [1, 2]) == [2, 3] and r._pool() is not first
+    r.close()

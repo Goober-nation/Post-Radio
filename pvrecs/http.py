@@ -151,6 +151,11 @@ class Http:
         self._push_back(host, wait)  # every caller backs off, not just this one
         time.sleep(wait)
 
+    def close(self) -> None:
+        with self._db_lock:
+            self.db.close()
+        self.session.close()
+
     def get(self, url, params=None, headers=None, shape=None, max_age=None, cache_params=None, valid=None):
         return self.request("GET", url, params=params, headers=headers, shape=shape, max_age=max_age,
                             cache_params=cache_params, valid=valid)

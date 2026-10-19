@@ -1,5 +1,6 @@
 """Deezer: tokenless similarity, catalogue popularity and artist radio."""
 import threading
+import time
 from collections.abc import Callable
 
 from ..http import Http
@@ -19,11 +20,12 @@ class Deezer(SimilarArtists, TopTracks, RadioSource, GenreSource):
 
     def __init__(self, http: Http, known_titles: Callable[[Artist], set[str]] | None = None,
                  fans_full_scale: float = FANS_FULL_SCALE, rank_full_scale: int = RANK_FULL_SCALE,
-                 cheap_titles: Callable[[Artist], set[str]] | None = None):
+                 cheap_titles: Callable[[Artist], set[str]] | None = None, memo_ttl_s: float = 7 * 86400):
         self.http = http
         self.known_titles = known_titles  # may be slow (MusicBrainz, 1 req/s): only for real ambiguity
         self.cheap_titles = cheap_titles  # free if available (e.g. LB with a token): also checks single hits
-        self._resolved: dict[tuple[str, str | None], Artist | None] = {}
+        self._resolved: dict[tuple[str, str | None], tuple[float, Artist | None]] = {}
+        self.memo_ttl_s = memo_ttl_s  # same as the HTTP cache: a failed match gets retried once data may change
         self._locks: dict[tuple[str, str | None], threading.Lock] = {}
         self._locks_guard = threading.Lock()
         self.fans_full_scale, self.rank_full_scale = fans_full_scale, rank_full_scale
@@ -44,9 +46,10 @@ class Deezer(SimilarArtists, TopTracks, RadioSource, GenreSource):
         with self._locks_guard:
             lock = self._locks.setdefault(key, threading.Lock())
         with lock:
-            if key not in self._resolved:
-                self._resolved[key] = self._match(artist)
-            match = self._resolved[key]
+            hit = self._resolved.get(key)
+            if hit is None or time.monotonic() - hit[0] > self.memo_ttl_s:
+                hit = self._resolved[key] = (time.monotonic(), self._match(artist))
+            match = hit[1]
         artist.deezer_id = match.deezer_id if match else 0
         if match:
             artist.absorb(match)
@@ -58,9 +61,14 @@ class Deezer(SimilarArtists, TopTracks, RadioSource, GenreSource):
             return None
         cheap = self.cheap_titles(artist) if (artist.mbid and self.cheap_titles) else set()
         if len(cands) == 1:
-            # one exact-name hit: if we know titles for free, require one in common (catches a namesake
-            # standing in for an artist Deezer doesn't have); otherwise accept it rather than pay MB calls
-            return cands[0] if not cheap or self._titles(cands[0].deezer_id) & cheap else None
+            # one exact-name hit: if free titles agree, accept; with no free titles, accept rather than pay
+            # MB calls; if free titles *disagree*, LB and Deezer catalogues can simply differ, so let the
+            # MB titles (track + release-group) settle it before throwing the match away
+            only = cands[0]
+            if not cheap or self._titles(only.deezer_id) & cheap:
+                return only
+            slow = self.known_titles(artist) if self.known_titles else set()
+            return only if slow and self._titles(only.deezer_id) & slow else None
         titles = cheap or (self.known_titles(artist) if artist.mbid and self.known_titles else set())
         if not titles:
             return cands[0]  # no way to tell them apart: most-followed

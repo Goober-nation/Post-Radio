@@ -64,6 +64,7 @@ class SaveRequest(BaseModel):
 def create_app(rec: Recommender | None = None) -> FastAPI:
     rec = rec or Recommender()
     app = FastAPI(title="pvrecs")
+    app.router.on_shutdown.append(rec.close)  # release worker threads with the server
 
     # plain `def` handlers run in FastAPI's threadpool, so blocking provider I/O is fine
     @app.post("/radio")

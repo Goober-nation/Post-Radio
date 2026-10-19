@@ -31,6 +31,8 @@ from .providers import (
     TrackSimilarity,
 )
 
+POOL_PREFIX = "pvrecs-fetch"
+
 
 @dataclass
 class Params:
@@ -171,17 +173,31 @@ class Radio:
     def _map(self, fn, items: list) -> list:
         """Run independent fetches concurrently (order kept). Per-host limits live in Http, so this
         only overlaps network latency; it never raises the request rate past what each API allows."""
-        if len(items) <= 1:
+        if len(items) <= 1 or threading.current_thread().name.startswith(POOL_PREFIX):
+            # already inside a pooled job: run inline, since resubmitting could deadlock a saturated pool
             return [fn(x) for x in items]
         return list(self._pool().map(fn, items))
 
     def _pool(self) -> ThreadPoolExecutor:
         """One pool per Radio, shared by graph building and the background taste load, so at most
-        fetch_workers fetches run at once. Jobs never submit to the pool themselves (no nesting deadlock)."""
+        fetch_workers fetches run at once. _map called from inside a pooled job runs inline (no deadlock)."""
         with self._pool_lock:
             if self._executor is None:
-                self._executor = ThreadPoolExecutor(max_workers=self.a.fetch_workers, thread_name_prefix="pvrecs")
+                self._executor = ThreadPoolExecutor(max_workers=self.a.fetch_workers, thread_name_prefix=POOL_PREFIX)
             return self._executor
+
+    def close(self) -> None:
+        """Stop the worker threads. Safe to call twice; a later fetch would start a fresh pool."""
+        with self._pool_lock:
+            ex, self._executor = self._executor, None
+        if ex:
+            ex.shutdown(wait=True)
+
+    def __enter__(self) -> "Radio":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
 
     def taste(self) -> Taste:
         """Merged opinions, reloaded only when some feedback provider's version() changes."""

@@ -140,7 +140,8 @@ class Recommender:
         lb_top = LBTopTracks(http, token, a.lb_listeners_full_scale, a.lb_min_listener_share) if token else None
 
         dz = Deezer(http, known_titles=mb.recording_titles, cheap_titles=lb_top.titles if lb_top else None,
-                    fans_full_scale=a.deezer_fans_full_scale, rank_full_scale=a.deezer_rank_full_scale)
+                    fans_full_scale=a.deezer_fans_full_scale, rank_full_scale=a.deezer_rank_full_scale,
+                    memo_ttl_s=self.cfg.storage.http_ttl_s)
         tracks = [dz] + ([lb_top] if lb_top else [])  # LB's popularity endpoint is the only one needing a token
         tags = TroiTagRadio(http, token, a.troi_window_width, a.genre_recordings_per_artist)
         return Providers(resolver=mb, similar=[LBSimilar(http), dz, mb], tracks=tracks,
@@ -254,7 +255,19 @@ class Recommender:
             raise FileNotFoundError(p)
         return json.loads(p.read_text())
 
+    def close(self) -> None:
+        """Release worker threads (and the cache connection). Use per-request Recommenders as `with` blocks."""
+        self.radio.close()
+        self.http.close()
+
+    def __enter__(self) -> "Recommender":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
     def with_config(self, **section_overrides) -> "Recommender":
-        """Copy with e.g. defaults=replace(cfg.defaults, n=20) — handy for per-request tweaks."""
+        """Copy with e.g. defaults=replace(cfg.defaults, n=20) — handy for per-request tweaks. Close it when
+        done (`with rec.with_config(...) as r:`), or its worker threads stay alive."""
         return Recommender(replace(self.cfg, **section_overrides), token=self.token, lb_user=self.lb_user,
                            history=self.history, feedback=self.feedback, offline=self.offline, log=self.log)
