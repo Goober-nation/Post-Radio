@@ -1,0 +1,13 @@
+troi>=2026.9
+requests
+pyyaml
+
+[dev]
+pytest
+ruff
+fastapi
+httpx
+
+[server]
+fastapi
+uvicorn

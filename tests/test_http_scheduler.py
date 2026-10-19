@@ -3,7 +3,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from pvrecs.http import Http
+from postradio.http import Http
 
 
 class Resp:
@@ -71,7 +71,7 @@ def test_deezer_no_data_error_is_cached_not_retried(tmp_path, monkeypatch):
 
     monkeypatch.setattr(http.session, "request", lambda *a, **k: calls.append(1) or R())
     slept = []
-    monkeypatch.setattr("pvrecs.http.time.sleep", slept.append)
+    monkeypatch.setattr("postradio.http.time.sleep", slept.append)
     assert http.get("https://api.deezer.com/artist/1/radio")["error"]["code"] == 800
     assert http.get("https://api.deezer.com/artist/1/radio")["error"]["code"] == 800
     assert len(calls) == 1 and sum(slept) < 1

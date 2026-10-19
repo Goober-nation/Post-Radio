@@ -6,10 +6,10 @@ from concurrent.futures import ThreadPoolExecutor
 from fakes import Resolver, Similar, Tracks
 from test_providers import CannedHttp, dz_track
 
-from pvrecs.engine import Params, Providers, Radio
-from pvrecs.models import Artist
-from pvrecs.providers.deezer import Deezer
-from pvrecs.providers.listenbrainz import LBTopTracks
+from postradio.engine import Params, Providers, Radio
+from postradio.models import Artist
+from postradio.providers.deezer import Deezer
+from postradio.providers.listenbrainz import LBTopTracks
 
 
 def one_namesake(titles):
@@ -93,7 +93,7 @@ def test_failed_match_is_retried_after_memo_ttl(monkeypatch):
     http.routes["/artist/9/top"] = {"data": [dz_track(1, 9, "Nope")]}
     assert dz.resolve(Artist("Bilal", mbid="m")) is None  # still memoised
     now = time.monotonic()
-    monkeypatch.setattr("pvrecs.providers.deezer.time.monotonic", lambda: now + 11)
+    monkeypatch.setattr("postradio.providers.deezer.time.monotonic", lambda: now + 11)
     assert dz.resolve(Artist("Bilal", mbid="m")) == 9
 
 
@@ -120,17 +120,17 @@ def test_inline_rule_is_a_thread_flag_not_a_name():
     r = Radio(Providers(resolver=Resolver(), similar=[Similar()], tracks=[Tracks()]), log=lambda *_: None)
     seen = []
     t = th.Thread(target=lambda: seen.append(r._map(lambda x: th.current_thread().name, [1, 2])),
-                  name="pvrecs-fetch-impostor")
+                  name="postradio-fetch-impostor")
     t.start()
     t.join()
-    assert all(n != "pvrecs-fetch-impostor" for n in seen[0])  # not mistaken for a pool thread: used the pool
+    assert all(n != "postradio-fetch-impostor" for n in seen[0])  # not mistaken for a pool thread: used the pool
     r.close()
 
 
 def test_server_closes_recommender_on_shutdown():
     from fastapi.testclient import TestClient
 
-    from pvrecs.server import create_app
+    from postradio.server import create_app
 
     class Rec:
         closed = False

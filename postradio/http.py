@@ -17,10 +17,10 @@ from urllib.parse import urlparse
 
 import requests
 
+from .brand import USER_AGENT
 from .config import Advanced
 
 CACHE_PATH = Path(__file__).resolve().parent.parent / ".cache" / "http.sqlite"
-USER_AGENT = "postvinyl-recs/0.1 ( tim.13102006@gmail.com )"
 
 
 class Http:

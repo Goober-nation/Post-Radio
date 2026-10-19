@@ -7,10 +7,10 @@ from fakes import NAMES, Resolver, Similar, Tracks, artist
 from test_api import rec  # noqa: F401  (fixture)
 from test_engine import StaticHistory
 
-from pvrecs.engine import Params, Providers, Radio
-from pvrecs.models import History, Play
-from pvrecs.providers import GenreSource
-from pvrecs.providers.feedback_store import JsonFeedbackStore
+from postradio.engine import Params, Providers, Radio
+from postradio.models import History, Play
+from postradio.providers import GenreSource
+from postradio.providers.feedback_store import JsonFeedbackStore
 
 
 class Genres(GenreSource):

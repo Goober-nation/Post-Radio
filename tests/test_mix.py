@@ -3,8 +3,8 @@ import pytest
 from fakes import Resolver, Similar, Tracks
 from test_api import rec  # noqa: F401  (fixture)
 
-from pvrecs.engine import Graph, Params, Providers, Radio
-from pvrecs.models import Artist, Track
+from postradio.engine import Graph, Params, Providers, Radio
+from postradio.models import Artist, Track
 
 
 def radio():
@@ -46,7 +46,7 @@ def test_multipliers_are_independent_and_unknown_streams_warn():
 
 
 def test_mix_parse_errors_name_the_flag():
-    from pvrecs.cli import _parse_mix
+    from postradio.cli import _parse_mix
 
     with pytest.raises(SystemExit, match="--mix troi: 'x' is not a number"):
         _parse_mix("troi=x")

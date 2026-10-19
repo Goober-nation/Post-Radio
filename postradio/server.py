@@ -1,4 +1,4 @@
-"""Optional HTTP wrapper around pvrecs.api.Recommender (`pvrecs serve`). Same operations as the library."""
+"""Optional HTTP wrapper around api.Recommender (the CLI's `serve`). Same operations as the library."""
 from contextlib import asynccontextmanager
 from typing import Literal
 
@@ -6,6 +6,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from .api import Recommender
+from .brand import DISPLAY_NAME
 
 
 class RadioRequest(BaseModel):
@@ -71,7 +72,7 @@ def create_app(rec: Recommender | None = None) -> FastAPI:
         yield
         rec.close()  # release worker threads and the cache connection with the server
 
-    app = FastAPI(title="pvrecs", lifespan=lifespan)
+    app = FastAPI(title=DISPLAY_NAME, lifespan=lifespan)
 
     # plain `def` handlers run in FastAPI's threadpool, so blocking provider I/O is fine
     @app.post("/radio")

@@ -7,10 +7,10 @@ import yaml
 from fakes import Resolver, Similar, Tracks
 from fastapi.testclient import TestClient
 
-from pvrecs import config as config_mod
-from pvrecs.api import Recommender, ResultCache, slug
-from pvrecs.engine import Providers, Radio
-from pvrecs.server import create_app
+from postradio import config as config_mod
+from postradio.api import Recommender, ResultCache, slug
+from postradio.engine import Providers, Radio
+from postradio.server import create_app
 
 
 @pytest.fixture
@@ -51,7 +51,7 @@ def test_result_cache_ttl_and_lru(monkeypatch):
     c.put("c", {"x": 3})
     assert c.get("a") is None and c.get("c") == {"x": 3}
     now = time.monotonic()
-    monkeypatch.setattr("pvrecs.api.time.monotonic", lambda: now + 11)
+    monkeypatch.setattr("postradio.api.time.monotonic", lambda: now + 11)
     assert c.get("c") is None
 
 

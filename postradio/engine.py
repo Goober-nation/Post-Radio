@@ -15,6 +15,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
+from .brand import POOL_PREFIX
 from .config import Advanced
 from .models import Artist, Edge, History, Taste, Track
 from .providers import (
@@ -31,7 +32,6 @@ from .providers import (
     TrackSimilarity,
 )
 
-POOL_PREFIX = "pvrecs-fetch"
 _worker = threading.local()  # in_pool=True only on threads of a Radio's own fetch pool
 
 

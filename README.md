@@ -1,4 +1,4 @@
-# postvinyl-recs
+# Post-radio
 
 Tunable "exploration radio", like ListenBrainz's Weekly Exploration but seeded from a track or artist you pick,
 with two knobs: how far it wanders (`explore`) and how mainstream it gets (`popularity`). It also pulls LB's
@@ -10,15 +10,15 @@ Full documentation lives in [docs/](docs/README.md): [architecture](docs/archite
 ## Use
 
 ```
-pvrecs radio --artist "Radiohead" -e 0.7            # explore 0..1
-pvrecs radio --track "Radiohead - Karma Police" -e 0.4 -p 0.1   # popularity 0 = deep cuts, 1 = hits
-pvrecs radio --artist-mbid <mbid> --save "late night"           # keep it
-pvrecs radio --genre "shoegaze,dream pop" --genre-op and   # genre seed (LB tags + Deezer genres)
-pvrecs radio --artist "Radiohead" --unheard artists   # tracks: drop played tracks; artists: drop known artists
-pvrecs feedback import loves.json / pvrecs feedback batches   # your own loves/hates, dated batches
-pvrecs deep-cuts [--user U] [--kind exploration|jams] [--save]  # LB Weekly Exploration, both weeks
-pvrecs saved [name]
-pvrecs serve                                          # HTTP API on 127.0.0.1:8765
+postradio radio --artist "Radiohead" -e 0.7            # explore 0..1
+postradio radio --track "Radiohead - Karma Police" -e 0.4 -p 0.1   # popularity 0 = deep cuts, 1 = hits
+postradio radio --artist-mbid <mbid> --save "late night"           # keep it
+postradio radio --genre "shoegaze,dream pop" --genre-op and   # genre seed (LB tags + Deezer genres)
+postradio radio --artist "Radiohead" --unheard artists   # tracks: drop played tracks; artists: drop known artists
+postradio feedback import loves.json / postradio feedback batches   # your own loves/hates, dated batches
+postradio deep-cuts [--user U] [--kind exploration|jams] [--save]  # LB Weekly Exploration, both weeks
+postradio saved [name]
+postradio serve                                          # HTTP API on 127.0.0.1:8765
 ```
 Global flags: `--config path.yaml`, `--no-token`, `--json`, `--offline`. Radio history: `--lb-user U`,
 `--history-file plays.jsonl|csv`, `--no-history`.
@@ -26,8 +26,8 @@ Global flags: `--config path.yaml`, `--no-token`, `--json`, `--offline`. Radio h
 ### From Python (how Post-Vinyl uses it)
 
 ```python
-from pvrecs.api import Recommender
-rec = Recommender()                                   # config.yaml / $PVRECS_CONFIG / defaults
+from postradio.api import Recommender
+rec = Recommender()                                   # config.yaml / $POSTRADIO_CONFIG / defaults
 res = rec.generate(artist="Radiohead", explore=0.7)  # blocking I/O: run in a worker thread
 rec.save(res["result_id"], name=None)                 # default name: <date>_<seed>_e<explore>_p<popularity|auto>
 rec.deep_cuts(user="LOSOSb")                          # {"weeks": [{"week": ..., "tracks": [...]}, ...]}
@@ -36,13 +36,13 @@ rec.list_saved(); rec.load_saved(name); rec.get(result_id)
 Results are held in memory (`storage.result_ttl_s`, `result_cache_size`) until saved; saving writes JSON to
 `storage.save_dir`. `Recommender(history=...)` accepts any `HistoryProvider`, e.g. a Maloja/multi-scrobbler adapter.
 
-HTTP (`pvrecs serve`): `POST /radio`, `GET /deep-cuts`, `GET /results/{id}`, `POST /results/{id}/save`,
+HTTP (`postradio serve`): `POST /radio`, `GET /deep-cuts`, `GET /results/{id}`, `POST /results/{id}/save`,
 `GET /saved`, `GET /saved/{name}`.
 
 ## Taste (loves / hates / ratings)
 
 On by default (`feedback.enabled`, or `--no-feedback`). Sources, in priority order (the first with an
-opinion on a track wins): **your imported JSON** (`pvrecs feedback import`; an append-only, dated log in
+opinion on a track wins): **your imported JSON** (`postradio feedback import`; an append-only, dated log in
 `<save_dir>/feedback/opinions.jsonl` where the newest opinion per item wins and only the newest
 `advanced.feedback_store_depth` opinions are read; the format is in `providers/feedback_store.py`), **Navidrome** (stars = +1; ratings 1★..5★ map to −1..+1 with 3★ neutral; artist
 and album stars/ratings count for the artist) and **LB** loves/hates (tokenless).
@@ -61,7 +61,7 @@ Each candidate stream (`deezer-top`, `lb`, `deezer-radio`, `troi`, `track-sim`, 
 1 keeps everything and 0 turns the stream off. The cap applies to the whole stream: `deezer-top: 0.2` keeps 20%
 of all Deezer catalogue candidates across every artist, those closest to the popularity target. `track-sim` keeps
 LB's most-similar-first order instead. A cap only touches its own stream, so lowering the catalogue streams
-leaves more room for troi and radio. Example run: `pvrecs radio --artist X --mix "deezer-top=0.2,lb=0.2"`.
+leaves more room for troi and radio. Example run: `postradio radio --artist X --mix "deezer-top=0.2,lb=0.2"`.
 
 ## Config
 
@@ -100,6 +100,6 @@ no requests. The SQLite cache is about 16 MB after one cold run (7-day TTL).
 
 ```
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/python scripts/gen_config_example.py   # after changing pvrecs/config.py
-.venv/bin/pytest -q && .venv/bin/ruff check pvrecs tests
+.venv/bin/python scripts/gen_config_example.py   # after changing postradio/config.py
+.venv/bin/pytest -q && .venv/bin/ruff check postradio tests
 ```

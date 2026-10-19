@@ -1,6 +1,6 @@
 """In-memory providers implementing the real interfaces."""
-from pvrecs.models import Artist, Edge, History, Track
-from pvrecs.providers import ArtistResolver, HistoryProvider, SimilarArtists, Tagger, TagRadio, TopTracks
+from postradio.models import Artist, Edge, History, Track
+from postradio.providers import ArtistResolver, HistoryProvider, SimilarArtists, Tagger, TagRadio, TopTracks
 
 # seed S -> A (close) -> B -> C (far); audience shrinks with distance
 NAMES = {"S": "Seed", "A": "Alpha", "B": "Beta", "C": "Gamma"}

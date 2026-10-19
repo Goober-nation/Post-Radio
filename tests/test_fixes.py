@@ -5,12 +5,12 @@ from fakes import Resolver, Similar, Tracks, artist
 from fastapi.testclient import TestClient
 from test_api import rec  # noqa: F401  (fixture)
 
-from pvrecs.engine import Params, Providers, Radio
-from pvrecs.models import Artist
-from pvrecs.providers import GenreSource
-from pvrecs.providers.feedback_store import JsonFeedbackStore
-from pvrecs.providers.listenbrainz import _troi_pick
-from pvrecs.server import create_app
+from postradio.engine import Params, Providers, Radio
+from postradio.models import Artist
+from postradio.providers import GenreSource
+from postradio.providers.feedback_store import JsonFeedbackStore
+from postradio.providers.listenbrainz import _troi_pick
+from postradio.server import create_app
 
 
 def test_engine_reloads_taste_when_store_changes(tmp_path):

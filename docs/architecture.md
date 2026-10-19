@@ -2,13 +2,13 @@
 
 ## Pipeline
 
-Each request goes through `Recommender` (the library facade in `pvrecs/api.py`) into `Radio.generate()`
-(`pvrecs/engine.py`). Arrow numbers give the execution order, and the table below explains each one.
-Every external call goes through `Http` (`pvrecs/http.py`).
+Each request goes through `Recommender` (the library facade in `postradio/api.py`) into `Radio.generate()`
+(`postradio/engine.py`). Arrow numbers give the execution order, and the table below explains each one.
+Every external call goes through `Http` (`postradio/http.py`).
 
 ```mermaid
 flowchart TB
-    CLI[CLI · pvrecs radio] -->|1| REC
+    CLI[CLI · postradio radio] -->|1| REC
     SRV[HTTP · POST /radio] -->|1| REC
     PY[Python · rec.generate] -->|1| REC
     REC[Recommender · api.py] -->|2| SEED
@@ -54,7 +54,7 @@ flowchart TB
 | G1 | Genre seed: a virtual artist (key prefixed `~`), with no MusicBrainz lookup and no seed catalogue or seed radio. |
 | G2 | Hop 1 comes from genre artists: LB tag radio (`lb-tags`) and Deezer `/genre/{id}/artists`. With AND, it's the intersection. |
 | G3 | Up to 100 tagged recordings are injected as candidates. |
-| F1 | `pvrecs feedback import` / `POST /feedback` appends a dated batch to `opinions.jsonl`. |
+| F1 | `postradio feedback import` / `POST /feedback` appends a dated batch to `opinions.jsonl`. |
 | F2 | Step T1 reads it back as the `json` source (first priority): the newest opinion per item, from the newest 5000 lines. |
 | D1 | `deep-cuts`: `Recommender.deep_cuts()` calls `LBCreatedFor`. |
 | D2 | Fetch the LB created-for listing (cached 1 h) and each playlist body. |

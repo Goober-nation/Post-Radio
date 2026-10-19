@@ -1,7 +1,7 @@
 # Classes
 
-Data crosses between modules only as the normalised types in `pvrecs/models.py`. Raw API payloads never
-leave the adapters. The engine talks only to the interfaces in `pvrecs/providers/__init__.py`.
+Data crosses between modules only as the normalised types in `postradio/models.py`. Raw API payloads never
+leave the adapters. The engine talks only to the interfaces in `postradio/providers/__init__.py`.
 
 ## Models and interfaces
 

@@ -1,11 +1,11 @@
 """Adapter tests: canned API payloads in, normalised models out."""
-from pvrecs.http import Http
-from pvrecs.models import Artist, History, Play, Track, track_key
-from pvrecs.providers.deezer import Deezer
-from pvrecs.providers.history import FileHistory
-from pvrecs.providers.lb_playlists import LBCreatedFor
-from pvrecs.providers.listenbrainz import troi_window
-from pvrecs.providers.musicbrainz import MusicBrainz
+from postradio.http import Http
+from postradio.models import Artist, History, Play, Track, track_key
+from postradio.providers.deezer import Deezer
+from postradio.providers.history import FileHistory
+from postradio.providers.lb_playlists import LBCreatedFor
+from postradio.providers.listenbrainz import troi_window
+from postradio.providers.musicbrainz import MusicBrainz
 
 
 class CannedHttp:
@@ -90,7 +90,7 @@ def test_http_backs_off_on_503_instead_of_failing(tmp_path, monkeypatch):
     http = Http(cache_path=tmp_path / "c.sqlite")
     monkeypatch.setattr(http.session, "request", lambda *a, **k: R(next(codes)))
     slept = []
-    monkeypatch.setattr("pvrecs.http.time.sleep", slept.append)
+    monkeypatch.setattr("postradio.http.time.sleep", slept.append)
     assert http.get("https://musicbrainz.org/ws/2/artist/x") == {"ok": 1}
     assert http.failures == 0 and sum(slept) >= 6  # 2s + 4s exponential backoff
 

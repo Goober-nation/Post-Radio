@@ -1,0 +1,15 @@
+Metadata-Version: 2.4
+Name: postradio
+Version: 0.1.0
+Requires-Python: >=3.11
+Requires-Dist: troi>=2026.9
+Requires-Dist: requests
+Requires-Dist: pyyaml
+Provides-Extra: server
+Requires-Dist: fastapi; extra == "server"
+Requires-Dist: uvicorn; extra == "server"
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"
+Requires-Dist: ruff; extra == "dev"
+Requires-Dist: fastapi; extra == "dev"
+Requires-Dist: httpx; extra == "dev"

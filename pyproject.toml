@@ -1,6 +1,6 @@
 [project]
-name = "pvrecs"
-version = "0.1.0"
+name = "postradio"
+dynamic = ["version"]
 requires-python = ">=3.11"
 dependencies = ["troi>=2026.9", "requests", "pyyaml"]
 
@@ -10,7 +10,7 @@ server = ["fastapi", "uvicorn"]
 dev = ["pytest", "ruff", "fastapi", "httpx"]
 
 [project.scripts]
-pvrecs = "pvrecs.cli:run"
+postradio = "postradio.cli:run"
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
@@ -20,3 +20,9 @@ line-length = 120
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B"]
+
+[tool.setuptools.dynamic]
+version = { attr = "postradio.brand.VERSION" }  # single source: postradio/brand.py
+
+[tool.setuptools.packages.find]
+include = ["postradio*"]

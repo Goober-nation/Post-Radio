@@ -7,6 +7,7 @@ from pathlib import Path
 
 from . import config as config_mod
 from .api import Recommender
+from .brand import CONFIG_ENV, NAME
 from .providers import NoHistory
 from .providers.history import FileHistory
 
@@ -27,11 +28,11 @@ def _parse_mix(text: str | None) -> dict[str, float] | None:
     for part in text.split(","):
         k, sep, v = part.partition("=")
         if not sep:
-            raise SystemExit(f"pvrecs: error: --mix expects STREAM=X, got '{part}'")
+            raise SystemExit(f"{NAME}: error: --mix expects STREAM=X, got '{part}'")
         try:
             out[k.strip()] = float(v)
         except ValueError:
-            raise SystemExit(f"pvrecs: error: --mix {k.strip()}: '{v}' is not a number (expected 0..1)") from None
+            raise SystemExit(f"{NAME}: error: --mix {k.strip()}: '{v}' is not a number (expected 0..1)") from None
     return out
 
 
@@ -53,15 +54,15 @@ class _Sub:
 
 
 def parser() -> argparse.ArgumentParser:
-    # global flags work before or after the subcommand: `pvrecs --json radio ...` == `pvrecs radio ... --json`
+    # global flags work before or after the subcommand: `--json radio ...` == `radio ... --json`
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--config", default=argparse.SUPPRESS,
-                        help="YAML config (default: $PVRECS_CONFIG or ./config.yaml)")
+                        help=f"YAML config (default: ${CONFIG_ENV} or ./config.yaml)")
     common.add_argument("--no-token", action="store_true", default=argparse.SUPPRESS,
                         help="ignore $LISTENBRAINZ_TOKEN (fully tokenless)")
     common.add_argument("--offline", action="store_true", default=argparse.SUPPRESS, help="HTTP cache only")
     common.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="print full JSON")
-    ap = argparse.ArgumentParser(prog="pvrecs", description="Tunable exploration radio + LB created-for playlists",
+    ap = argparse.ArgumentParser(prog=NAME, description="Tunable exploration radio + LB created-for playlists",
                                  parents=[common])
     sub = _Sub(ap.add_subparsers(dest="cmd", required=True), common)
 
@@ -187,7 +188,7 @@ def run(argv=None):
     try:
         main(argv)
     except (ValueError, FileNotFoundError, FileExistsError, KeyError) as e:
-        raise SystemExit(f"pvrecs: error: {e}") from None
+        raise SystemExit(f"{NAME}: error: {e}") from None
 
 
 if __name__ == "__main__":

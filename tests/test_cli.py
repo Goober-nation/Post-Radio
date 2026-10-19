@@ -1,5 +1,5 @@
 """CLI argument handling."""
-from pvrecs.cli import parser
+from postradio.cli import parser
 
 
 def _parse(argv):

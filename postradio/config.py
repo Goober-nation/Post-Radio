@@ -6,6 +6,8 @@ from pathlib import Path
 
 import yaml
 
+from .brand import CONFIG_ENV, DEFAULT_SAVE_DIR
+
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -21,7 +23,7 @@ class Defaults:
 
 @dataclass
 class Storage:
-    save_dir: str = "~/.local/share/pvrecs/playlists"  # liked playlists are written here as JSON
+    save_dir: str = DEFAULT_SAVE_DIR  # liked playlists are written here as JSON
     feedback_file: str | None = None  # imported loves/hates log; null = <save_dir>/feedback/opinions.jsonl
     result_ttl_s: int = 3600  # unsaved results are kept in memory this long...
     result_cache_size: int = 50  # ...up to this many
@@ -181,8 +183,8 @@ def _merge(obj, data: dict, where: str):
 
 
 def load(path: str | Path | None = None) -> Config:
-    """Explicit path > $PVRECS_CONFIG > ./config.yaml (repo root) > built-in defaults."""
-    p = path or os.environ.get("PVRECS_CONFIG") or (ROOT / "config.yaml")
+    """Explicit path > $<brand>_CONFIG > ./config.yaml (repo root) > built-in defaults."""
+    p = path or os.environ.get(CONFIG_ENV) or (ROOT / "config.yaml")
     p = Path(p)
     if not p.exists():
         if path:

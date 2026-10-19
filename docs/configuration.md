@@ -1,8 +1,8 @@
 # Configuration and options
 
-## CLI: `pvrecs`
+## CLI: `postradio`
 
-Global flags work before or after the subcommand: `--config PATH` (default `$PVRECS_CONFIG` or
+Global flags work before or after the subcommand: `--config PATH` (default `$POSTRADIO_CONFIG` or
 `./config.yaml`), `--no-token`, `--offline` (cache only) and `--json`. User errors print one line instead
 of a traceback.
 
@@ -15,11 +15,11 @@ of a traceback.
 | `saved [name]` | List saved playlists, or print one |
 | `serve` | `--host` (127.0.0.1) · `--port` (8765) |
 
-Environment variables: `LISTENBRAINZ_TOKEN`, `LISTENBRAINZ_USERNAME`, `PVRECS_CONFIG`, `NAVIDROME_URL`,
+Environment variables: `LISTENBRAINZ_TOKEN`, `LISTENBRAINZ_USERNAME`, `POSTRADIO_CONFIG`, `NAVIDROME_URL`,
 `NAVIDROME_USERNAME`, `NAVIDROME_PASSWORD`. A `.env` file in the repository root is loaded at startup and
 doesn't override variables already set.
 
-## HTTP API: `pvrecs serve` (FastAPI, OpenAPI at `/docs`)
+## HTTP API: `postradio serve` (FastAPI, OpenAPI at `/docs`)
 
 | Endpoint | Does |
 |---|---|
@@ -34,9 +34,9 @@ doesn't override variables already set.
 ## Python API
 
 ```python
-from pvrecs.api import Recommender
+from postradio.api import Recommender
 
-with Recommender() as rec:                      # reads config.yaml / $PVRECS_CONFIG / defaults
+with Recommender() as rec:                      # reads config.yaml / $POSTRADIO_CONFIG / defaults
     res = rec.generate(artist="Radiohead", explore=0.7, popularity=0.3, mix={"troi": 1.0})
     rec.save(res["result_id"])                  # writes JSON to storage.save_dir
     rec.deep_cuts()                             # {"weeks": [{"week": ..., "tracks": [...]}, ...]}
@@ -54,7 +54,7 @@ Only the keys you change are needed. Unknown keys are an error.
 | Section | Keys (default) |
 |---|---|
 | `defaults` | `explore` 0.5 · `popularity` null · `n` 50 · `per_artist` 2 · `unheard` null (`tracks` \| `artists`) |
-| `storage` | `save_dir` `~/.local/share/pvrecs/playlists` · `feedback_file` null (= `<save_dir>/feedback/opinions.jsonl`) · `result_ttl_s` 3600 · `result_cache_size` 50 · `http_cache` `.cache/http.sqlite` · `http_ttl_s` 604800 |
+| `storage` | `save_dir` `~/.local/share/postradio/playlists` · `feedback_file` null (= `<save_dir>/feedback/opinions.jsonl`) · `result_ttl_s` 3600 · `result_cache_size` 50 · `http_cache` `.cache/http.sqlite` · `http_ttl_s` 604800 |
 | `sources` | `use_lb_token` true · `history` lb (`lb` \| `file` \| `none`) · `lb_user` null · `history_file` null |
 | `feedback` | `enabled` true · `sources` [json, navidrome, lb] (priority order; the first with an opinion on an item wins) · `navidrome_url` null (`$NAVIDROME_URL`) · `lb_user` null |
 | `server` | `host` 127.0.0.1 · `port` 8765 |

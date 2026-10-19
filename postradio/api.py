@@ -1,6 +1,6 @@
 """Public library API: what Post-Vinyl (or the HTTP server) calls.
 
-    rec = Recommender()                       # reads config.yaml / $PVRECS_CONFIG
+    rec = Recommender()                       # reads config.yaml / $POSTRADIO_CONFIG
     res = rec.generate(artist="Radiohead", explore=0.7)
     rec.save(res["result_id"])                 # user liked it -> JSON in storage.save_dir
     rec.deep_cuts()                            # LB Weekly Exploration, both weeks

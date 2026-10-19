@@ -1,8 +1,8 @@
 """Engine tests: fake providers, real graph/ranking logic."""
 from fakes import Resolver, Similar, StaticHistory, TagRad, Tags, Tracks
 
-from pvrecs.engine import Graph, Params, Providers, Radio, artist_pop_fit, hop_fit, pop_fit
-from pvrecs.models import Artist, History, Play
+from postradio.engine import Graph, Params, Providers, Radio, artist_pop_fit, hop_fit, pop_fit
+from postradio.models import Artist, History, Play
 
 
 def radio(history=None, similar=None, **kw):

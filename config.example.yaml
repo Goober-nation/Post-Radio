@@ -1,5 +1,5 @@
-# pvrecs configuration. Copy to config.yaml (or point $PVRECS_CONFIG / --config at it).
-# Only keys you change are needed. See pvrecs/config.py for what each one does.
+# postradio configuration. Copy to config.yaml (or point $POSTRADIO_CONFIG / --config at it).
+# Only keys you change are needed. See postradio/config.py for what each one does.
 
 # ---------------- user settings ----------------
 defaults:
@@ -9,7 +9,7 @@ defaults:
   per_artist: 2
   unheard: null
 storage:
-  save_dir: ~/.local/share/pvrecs/playlists
+  save_dir: ~/.local/share/postradio/playlists
   feedback_file: null
   result_ttl_s: 3600
   result_cache_size: 50

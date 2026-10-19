@@ -3,6 +3,7 @@ import hashlib
 import secrets
 from concurrent.futures import ThreadPoolExecutor
 
+from ..brand import SUBSONIC_CLIENT
 from ..config import Advanced
 from ..http import Http
 from ..models import Feedback, rating_score
@@ -69,7 +70,7 @@ class NavidromeFeedback(FeedbackProvider):
     def _call(self, endpoint: str, **params) -> dict:
         salt = secrets.token_hex(6)
         auth = {"u": self.user, "t": hashlib.md5((self.password + salt).encode()).hexdigest(), "s": salt,
-                "v": "1.16.1", "c": "pvrecs", "f": "json"}
+                "v": "1.16.1", "c": SUBSONIC_CLIENT, "f": "json"}
         # auth params change every call; cache on the stable part only
         d = self.http.get(f"{self.url}/rest/{endpoint}", params={**params, **auth}, max_age=self.max_age,
                           cache_params=params, valid=_subsonic_ok)

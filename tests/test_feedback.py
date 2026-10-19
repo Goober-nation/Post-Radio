@@ -2,10 +2,10 @@
 from fakes import Resolver, Similar, Tracks
 from test_providers import CannedHttp
 
-from pvrecs.engine import Params, Providers, Radio
-from pvrecs.models import Artist, Feedback, Taste, Track, rating_score
-from pvrecs.providers import FeedbackProvider, TrackSimilarity
-from pvrecs.providers.feedback import LBFeedback, NavidromeFeedback
+from postradio.engine import Params, Providers, Radio
+from postradio.models import Artist, Feedback, Taste, Track, rating_score
+from postradio.providers import FeedbackProvider, TrackSimilarity
+from postradio.providers.feedback import LBFeedback, NavidromeFeedback
 
 
 class StaticFeedback(FeedbackProvider):
@@ -48,7 +48,7 @@ def test_artist_score_aggregates_and_saturates():
 
 
 def test_love_and_hate_move_artist_weight_by_factors():
-    from pvrecs.engine import Graph
+    from postradio.engine import Graph
     n = Graph().add(Artist("Beta", mbid="B"), 2, 1.0, "lb")
     base = radio().artist_weight(n, Params(0.5))
     loved = radio([StaticFeedback("lb", [Feedback("Beta", None, 1.0, "lb", artist_mbid="B")])])
