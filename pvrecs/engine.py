@@ -9,6 +9,7 @@ interface, and every tunable comes from config.Advanced.
 import math
 import random
 import re
+import threading
 from collections import defaultdict
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -152,6 +153,8 @@ class Radio:
         self._history: History | None = None
         self._taste: Taste | None = None
         self._taste_version: tuple = ()
+        self._executor: ThreadPoolExecutor | None = None
+        self._pool_lock = threading.Lock()
         self._history_version: object = None
         self.seed_pop: float | None = None
         self.track_boost: dict[str, float] = {}
@@ -170,8 +173,15 @@ class Radio:
         only overlaps network latency; it never raises the request rate past what each API allows."""
         if len(items) <= 1:
             return [fn(x) for x in items]
-        with ThreadPoolExecutor(max_workers=self.a.fetch_workers) as pool:
-            return list(pool.map(fn, items))
+        return list(self._pool().map(fn, items))
+
+    def _pool(self) -> ThreadPoolExecutor:
+        """One pool per Radio, shared by graph building and the background taste load, so at most
+        fetch_workers fetches run at once. Jobs never submit to the pool themselves (no nesting deadlock)."""
+        with self._pool_lock:
+            if self._executor is None:
+                self._executor = ThreadPoolExecutor(max_workers=self.a.fetch_workers, thread_name_prefix="pvrecs")
+            return self._executor
 
     def taste(self) -> Taste:
         """Merged opinions, reloaded only when some feedback provider's version() changes."""

@@ -110,6 +110,7 @@ class Advanced:
     seed_track_boost: float = 1.0  # injected seed-similar tracks: score *= 1 + boost * similarity
     seed_track_affinity: float = 0.8  # graph affinity for artists reached only via the seed track
     feedback_max_age_s: int = 900  # re-read loves/ratings after this long
+    history_refresh_s: int = 86400  # long-running processes reload listening history this often
     feedback_store_depth: int = 5000  # imported-JSON log: only the newest N opinions are read
     # provider scales
     deezer_fans_full_scale: float = 6.9  # log10 fans of a superstar

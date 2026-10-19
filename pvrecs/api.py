@@ -22,7 +22,7 @@ from pathlib import Path
 from . import config as config_mod
 from .engine import Params, Providers, Radio
 from .http import Http
-from .models import Track, norm
+from .models import Track
 from .providers import FeedbackProvider, HistoryProvider, NoHistory
 from .providers.deezer import Deezer
 from .providers.feedback import LBFeedback, NavidromeFeedback
@@ -106,7 +106,8 @@ class Recommender:
                 raise ValueError("sources.history = file needs sources.history_file")
             return FileHistory(self.cfg.path(s.history_file))
         if s.history == "lb" and self.lb_user:
-            return ListenBrainzHistory(self.http, self.lb_user, self.token, refresh_s=self.cfg.storage.http_ttl_s)
+            return ListenBrainzHistory(self.http, self.lb_user, self.token,
+                                       refresh_s=self.cfg.advanced.history_refresh_s)
         return NoHistory()
 
     def _feedback_from_config(self) -> list[FeedbackProvider]:
@@ -138,15 +139,8 @@ class Recommender:
         mb = MusicBrainz(http)
         lb_top = LBTopTracks(http, token, a.lb_listeners_full_scale, a.lb_min_listener_share) if token else None
 
-        def known_titles(artist):  # LB titles are free (no 1 req/s limit); MB only as the fallback
-            if lb_top:
-                titles = {norm(t.title) for t in lb_top.top_tracks(artist, 200)}
-                if titles:
-                    return titles
-            return mb.recording_titles(artist)
-
-        dz = Deezer(http, known_titles=known_titles, fans_full_scale=a.deezer_fans_full_scale,
-                    rank_full_scale=a.deezer_rank_full_scale)
+        dz = Deezer(http, known_titles=mb.recording_titles, cheap_titles=lb_top.titles if lb_top else None,
+                    fans_full_scale=a.deezer_fans_full_scale, rank_full_scale=a.deezer_rank_full_scale)
         tracks = [dz] + ([lb_top] if lb_top else [])  # LB's popularity endpoint is the only one needing a token
         tags = TroiTagRadio(http, token, a.troi_window_width, a.genre_recordings_per_artist)
         return Providers(resolver=mb, similar=[LBSimilar(http), dz, mb], tracks=tracks,

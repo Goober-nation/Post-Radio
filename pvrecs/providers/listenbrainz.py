@@ -5,7 +5,7 @@ import random
 from troi.plist import plist
 
 from ..http import Http
-from ..models import Artist, Edge, Track, log_popularity
+from ..models import Artist, Edge, Track, log_popularity, norm
 from . import GenreSource, RadioSource, SimilarArtists, TagRadio, TopTracks, TrackSimilarity
 
 API = "https://api.listenbrainz.org/1"
@@ -90,12 +90,18 @@ class LBTopTracks(TopTracks):
         self.http, self.headers = http, _headers(token)
         self.full_scale, self.min_share = listeners_full_scale, min_listener_share
 
-    def top_tracks(self, artist: Artist, limit: int = 120) -> list[Track]:
-        if not artist.mbid:
-            return []
-        rows = self.http.get(f"{API}/popularity/top-recordings-for-artist/{artist.mbid}", headers=self.headers,
+    def _rows(self, mbid: str) -> list[dict]:
+        rows = self.http.get(f"{API}/popularity/top-recordings-for-artist/{mbid}", headers=self.headers,
                              shape=_trim_top)
-        if not isinstance(rows, list) or not rows:
+        return rows if isinstance(rows, list) else []
+
+    def titles(self, artist: Artist) -> set[str]:
+        """Normalised titles of the artist's recordings. Read-only: never touches the Artist."""
+        return {norm(r["recording_name"]) for r in self._rows(artist.mbid)} if artist.mbid else set()
+
+    def top_tracks(self, artist: Artist, limit: int = 120) -> list[Track]:
+        rows = self._rows(artist.mbid) if artist.mbid else []
+        if not rows:
             return []
         top_users = rows[0]["total_user_count"] or 0
         if artist.popularity is None:

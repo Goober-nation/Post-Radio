@@ -1,4 +1,5 @@
 """Deezer: tokenless similarity, catalogue popularity and artist radio."""
+import threading
 from collections.abc import Callable
 
 from ..http import Http
@@ -17,9 +18,14 @@ class Deezer(SimilarArtists, TopTracks, RadioSource, GenreSource):
     name = "deezer"
 
     def __init__(self, http: Http, known_titles: Callable[[Artist], set[str]] | None = None,
-                 fans_full_scale: float = FANS_FULL_SCALE, rank_full_scale: int = RANK_FULL_SCALE):
+                 fans_full_scale: float = FANS_FULL_SCALE, rank_full_scale: int = RANK_FULL_SCALE,
+                 cheap_titles: Callable[[Artist], set[str]] | None = None):
         self.http = http
-        self.known_titles = known_titles
+        self.known_titles = known_titles  # may be slow (MusicBrainz, 1 req/s): only for real ambiguity
+        self.cheap_titles = cheap_titles  # free if available (e.g. LB with a token): also checks single hits
+        self._resolved: dict[tuple[str, str | None], Artist | None] = {}
+        self._locks: dict[tuple[str, str | None], threading.Lock] = {}
+        self._locks_guard = threading.Lock()
         self.fans_full_scale, self.rank_full_scale = fans_full_scale, rank_full_scale
 
     # ---- identity ----
@@ -30,22 +36,36 @@ class Deezer(SimilarArtists, TopTracks, RadioSource, GenreSource):
         return [self._artist(a) for a in rows]
 
     def resolve(self, artist: Artist) -> int | None:
-        """Find (and cache on the artist) its Deezer id; 0 means looked up and not found/ambiguous."""
+        """Find (and cache on the artist) its Deezer id; 0 means looked up and not found/ambiguous.
+        Memoised per (name, MBID) and locked, so parallel jobs never look the same artist up twice."""
         if artist.deezer_id is not None:
             return artist.deezer_id or None
-        cands = self._candidates(artist.name)
-        match = None
-        if len(cands) == 1:
-            match = cands[0]  # a single exact-name hit: verifying it would cost calls and prove little
-        elif cands and artist.mbid and self.known_titles:
-            titles = self.known_titles(artist)  # same-named artists (two 'Bilal's): pick by shared titles
-            match = next((c for c in cands if len(self._titles(c.deezer_id) & titles) >= 2), None) if titles else None
-        elif cands:
-            match = cands[0]  # no way to tell them apart: most-followed
+        key = (artist.key, artist.mbid)
+        with self._locks_guard:
+            lock = self._locks.setdefault(key, threading.Lock())
+        with lock:
+            if key not in self._resolved:
+                self._resolved[key] = self._match(artist)
+            match = self._resolved[key]
         artist.deezer_id = match.deezer_id if match else 0
         if match:
             artist.absorb(match)
         return artist.deezer_id or None
+
+    def _match(self, artist: Artist) -> Artist | None:
+        cands = self._candidates(artist.name)
+        if not cands:
+            return None
+        cheap = self.cheap_titles(artist) if (artist.mbid and self.cheap_titles) else set()
+        if len(cands) == 1:
+            # one exact-name hit: if we know titles for free, require one in common (catches a namesake
+            # standing in for an artist Deezer doesn't have); otherwise accept it rather than pay MB calls
+            return cands[0] if not cheap or self._titles(cands[0].deezer_id) & cheap else None
+        titles = cheap or (self.known_titles(artist) if artist.mbid and self.known_titles else set())
+        if not titles:
+            return cands[0]  # no way to tell them apart: most-followed
+        # same-named artists (two 'Bilal's): pick by shared titles
+        return next((c for c in cands if len(self._titles(c.deezer_id) & titles) >= 2), None)
 
     def _titles(self, did: int) -> set[str]:
         """Track and album titles: albums overlap far better with MB release groups for big catalogues."""

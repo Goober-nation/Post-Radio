@@ -92,6 +92,7 @@ advanced:
   seed_track_boost: 1.0
   seed_track_affinity: 0.8
   feedback_max_age_s: 900
+  history_refresh_s: 86400
   feedback_store_depth: 5000
   deezer_fans_full_scale: 6.9
   deezer_rank_full_scale: 900000
