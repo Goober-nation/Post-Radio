@@ -1,0 +1,20 @@
+[project]
+name = "pvrecs"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["troi>=2026.9", "requests"]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff"]
+
+[project.scripts]
+pvrecs = "pvrecs.cli:main"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B"]
