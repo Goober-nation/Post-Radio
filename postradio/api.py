@@ -87,7 +87,7 @@ class Recommender:
         self.lb_user = lb_user or s.lb_user or os.environ.get("LISTENBRAINZ_USERNAME") or None
         self.http = Http(self.cfg.path(self.cfg.storage.http_cache), ttl=self.cfg.storage.http_ttl_s, offline=offline,
                          min_interval=a.min_interval_s, max_attempts=a.max_attempts, backoff_cap_s=a.backoff_cap_s,
-                         max_in_flight=a.max_in_flight, ratelimit_floor=a.ratelimit_floor)
+                         max_in_flight=a.max_in_flight, ratelimit_floor=a.ratelimit_floor, keep_s=a.http_cache_keep_s)
         self.log, self.offline = log, offline
         st = self.cfg.storage
         store_path = (self.cfg.path(st.feedback_file) if st.feedback_file

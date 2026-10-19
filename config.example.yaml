@@ -119,8 +119,9 @@ advanced:
     labs.api.listenbrainz.org: 4
     default: 4
   max_attempts:
-    musicbrainz.org: 8
+    musicbrainz.org: 5
     default: 4
   ratelimit_floor: 2
   fetch_workers: 8
-  backoff_cap_s: 60.0
+  backoff_cap_s: 30.0
+  http_cache_keep_s: 2592000

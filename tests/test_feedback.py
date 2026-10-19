@@ -95,7 +95,8 @@ def test_track_seed_injects_similar_recordings():
     prov = Providers(resolver=TrackResolver(), similar=[Similar()], tracks=[Tracks()], track_similarity=FakeSim())
     res = Radio(prov, log=lambda *_: None).generate(Params(0.5, n=10, seed=1), track="Seed - x")
     beta3 = [t for t in res["tracks"] if t["title"] == "Beta song 3"]
-    assert beta3 and "track-sim" in beta3[0]["sources"] and beta3[0]["taste"]["similar_boost"] == 2.0
+    assert beta3 and "lb-similar-rec" not in beta3[0]["sources"] and "track-sim" in beta3[0]["sources"]
+    assert beta3[0]["taste"]["similar_boost"] == 2.0
 
 
 def test_lb_feedback_adapter():

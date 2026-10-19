@@ -140,10 +140,11 @@ class Advanced:
     max_in_flight: dict[str, int] = field(default_factory=lambda: {
         "musicbrainz.org": 1, "api.deezer.com": 6, "api.listenbrainz.org": 4, "labs.api.listenbrainz.org": 4,
         "default": 4})
-    max_attempts: dict[str, int] = field(default_factory=lambda: {"musicbrainz.org": 8, "default": 4})
+    max_attempts: dict[str, int] = field(default_factory=lambda: {"musicbrainz.org": 5, "default": 4})
     ratelimit_floor: int = 2  # LB: when X-RateLimit-Remaining drops to this, wait for the window to reset
     fetch_workers: int = 8  # threads for independent fetches (catalogues, neighbours, similar recordings)
-    backoff_cap_s: float = 60.0
+    backoff_cap_s: float = 30.0  # MB worst case: 2+4+8+16 s of waiting across 5 attempts
+    http_cache_keep_s: int = 30 * 86400  # cache rows older than this are deleted (stale fallback window)
 
 
 @dataclass

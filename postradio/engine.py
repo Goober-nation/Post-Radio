@@ -426,7 +426,7 @@ class Radio:
                 tn = g.node_for(t.artist, hop, self.a.seed_track_affinity * w, "track-sim", seed)
                 t.artist = tn.artist
                 t.popularity = p.pop  # unknown; don't let the popularity fit decide these
-                t.sources = t.sources | {"track-sim"}
+                t.sources = {"track-sim"}  # one stream, one label: no unearned multi-source bonus
                 seed_bonus[id(t)] = 1 + self.a.seed_track_boost * w  # applied only if the track survives the cap
                 streams["track-sim"].append((t, tn))
         if seed.artist.virtual:
