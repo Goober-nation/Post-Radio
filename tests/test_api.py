@@ -18,7 +18,8 @@ def rec(tmp_path):
     cfg = config_mod.Config()
     cfg = dataclasses.replace(cfg, storage=dataclasses.replace(cfg.storage, save_dir=str(tmp_path / "saved"),
                                                                http_cache=str(tmp_path / "http.sqlite")),
-                              sources=dataclasses.replace(cfg.sources, history="none"))
+                              sources=dataclasses.replace(cfg.sources, history="none"),
+                              feedback=dataclasses.replace(cfg.feedback, enabled=False))
     r = Recommender(cfg, token="")
     r.radio = Radio(Providers(resolver=Resolver(), similar=[Similar()], tracks=[Tracks()]), cfg.advanced,
                     log=lambda *_: None)
@@ -40,7 +41,7 @@ def test_config_partial_yaml_and_unknown_keys(tmp_path):
 def test_example_config_matches_defaults():
     data = yaml.safe_load((config_mod.ROOT / "config.example.yaml").read_text())
     assert config_mod.load(config_mod.ROOT / "config.example.yaml") == config_mod.Config()
-    assert set(data) == {"defaults", "storage", "sources", "server", "advanced"}
+    assert set(data) == {"defaults", "storage", "sources", "feedback", "server", "advanced"}
 
 
 def test_result_cache_ttl_and_lru(monkeypatch):

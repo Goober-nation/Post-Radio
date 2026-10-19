@@ -51,6 +51,8 @@ def parser() -> argparse.ArgumentParser:
     h.add_argument("--lb-user", help="history from this LB user")
     h.add_argument("--history-file", help="history from a .jsonl/.csv plays file")
     h.add_argument("--no-history", action="store_true")
+    r.add_argument("--no-feedback", action="store_true", help="ignore loves/hates/ratings")
+    r.add_argument("--navidrome-url", help="read stars/ratings from this Navidrome (creds from env)")
     r.add_argument("--save", nargs="?", const="", metavar="NAME", help="save the result (default name if omitted)")
 
     d = sub.add_parser("deep-cuts", help="LB Weekly Exploration (or Jams), both weeks")
@@ -82,6 +84,10 @@ def main(argv=None):
             history = FileHistory(a.history_file)
         elif a.lb_user:
             cfg = replace(cfg, sources=replace(cfg.sources, history="lb", lb_user=a.lb_user))
+        if a.no_feedback:
+            cfg = replace(cfg, feedback=replace(cfg.feedback, enabled=False))
+        if a.navidrome_url:
+            cfg = replace(cfg, feedback=replace(cfg.feedback, navidrome_url=a.navidrome_url))
     rec = Recommender(cfg, token=token, history=history, offline=a.offline, log=log)
 
     if a.cmd == "serve":

@@ -36,6 +36,14 @@ class Sources:
 
 
 @dataclass
+class FeedbackCfg:
+    enabled: bool = True  # loves/hates/ratings influence the recs
+    sources: list[str] = field(default_factory=lambda: ["navidrome", "lb"])  # priority: first wins per track
+    navidrome_url: str | None = None  # null = $NAVIDROME_URL; creds from $NAVIDROME_USERNAME/$NAVIDROME_PASSWORD
+    lb_user: str | None = None  # null = sources.lb_user / $LISTENBRAINZ_USERNAME
+
+
+@dataclass
 class Server:
     host: str = "127.0.0.1"
     port: int = 8765
@@ -88,6 +96,15 @@ class Advanced:
     jitter: float = 0.3
     shuffle_band: int = 10
     max_source_share: float = 0.5
+    # taste (loves / hates / ratings)
+    love_factor: float = 1.5  # weight *= love_factor ** score   for score in (0, 1]
+    hate_factor: float = 0.3  # weight *= hate_factor ** -score  for score in [-1, 0)
+    feedback_track_cap: int = 50  # strongest track opinions that feed the track-similarity layer
+    similar_recordings_limit: int = 50
+    seed_track_similar_limit: int = 50  # track seeds inject this many similar recordings
+    seed_track_boost: float = 1.0  # injected seed-similar tracks: score *= 1 + boost * similarity
+    seed_track_affinity: float = 0.8  # graph affinity for artists reached only via the seed track
+    feedback_max_age_s: int = 900  # re-read loves/ratings after this long
     # provider scales
     deezer_fans_full_scale: float = 6.9  # log10 fans of a superstar
     deezer_rank_full_scale: int = 900_000
@@ -106,6 +123,7 @@ class Config:
     defaults: Defaults = field(default_factory=Defaults)
     storage: Storage = field(default_factory=Storage)
     sources: Sources = field(default_factory=Sources)
+    feedback: FeedbackCfg = field(default_factory=FeedbackCfg)
     server: Server = field(default_factory=Server)
     advanced: Advanced = field(default_factory=Advanced)
 

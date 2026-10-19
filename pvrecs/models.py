@@ -108,3 +108,64 @@ class History:
 
     def summary(self) -> str:
         return f"{len({k for k in self._artists if k.startswith('n:')})} artists, {len(self._heard)} tracks"
+
+
+@dataclass(frozen=True)
+class Feedback:
+    """One opinion from one source. score in [-1, 1]: love/star/5 stars = 1, hate/1 star = -1, 3 stars = 0.
+    title=None means the opinion is about the artist as a whole (starred/rated artist)."""
+    artist: str
+    title: str | None
+    score: float
+    source: str
+    artist_mbid: str | None = None
+    recording_mbid: str | None = None
+
+
+def rating_score(stars: int) -> float:
+    """1..5 stars -> -1..1, 3 is neutral."""
+    return (max(1, min(5, stars)) - 3) / 2
+
+
+class Taste:
+    """Aggregated likes/dislikes. Per track, the first source in `priority` with an opinion wins
+    (Navidrome over LB by default); artist scores sum their tracks' scores, squashed to [-1, 1]."""
+
+    def __init__(self, items: Iterable[Feedback] = (), priority: list[str] | None = None):
+        rank = {s: i for i, s in enumerate(priority or [])}
+        best: dict[str, Feedback] = {}
+        artist_direct: dict[str, Feedback] = {}
+        for f in items:
+            key = track_key(f.artist, f.title) if f.title else "a:" + norm(f.artist)
+            target = best if f.title else artist_direct
+            old = target.get(key)
+            if old is None or rank.get(f.source, 99) < rank.get(old.source, 99):
+                target[key] = f
+        self.tracks = best  # track_key -> winning Feedback
+        self._by_recording = {f.recording_mbid: f for f in best.values() if f.recording_mbid}
+        totals: dict[str, float] = {}
+        for f in list(best.values()) + list(artist_direct.values()):
+            weight = 2.0 if f.title is None else 1.0  # an explicit artist opinion counts double
+            for k in filter(None, (f.artist_mbid, "n:" + norm(f.artist))):
+                totals[k] = totals.get(k, 0.0) + weight * f.score
+        self._artists = {k: math.tanh(v / 2) for k, v in totals.items()}
+
+    def artist(self, artist: Artist) -> float:
+        return self._artists.get(artist.mbid or "", 0.0) or self._artists.get("n:" + artist.key, 0.0)
+
+    def track(self, track: Track) -> float:
+        f = self._by_recording.get(track.recording_mbid or "") or self.tracks.get(track.key)
+        return f.score if f else 0.0
+
+    def strongest(self, n: int) -> list[Feedback]:
+        """Track opinions with a recording MBID, strongest first (feeds the track-similarity layer)."""
+        items = [f for f in self.tracks.values() if f.recording_mbid and f.score]
+        return sorted(items, key=lambda f: -abs(f.score))[:n]
+
+    def __bool__(self) -> bool:
+        return bool(self.tracks or self._artists)
+
+    def summary(self) -> str:
+        loves = sum(1 for f in self.tracks.values() if f.score > 0)
+        hates = sum(1 for f in self.tracks.values() if f.score < 0)
+        return f"{loves} liked / {hates} disliked tracks, {len(self._artists)} artist keys"

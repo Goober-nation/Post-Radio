@@ -18,6 +18,13 @@ sources:
   history: lb
   lb_user: null
   history_file: null
+feedback:
+  enabled: true
+  sources:
+  - navidrome
+  - lb
+  navidrome_url: null
+  lb_user: null
 server:
   host: 127.0.0.1
   port: 8765
@@ -70,6 +77,14 @@ advanced:
   jitter: 0.3
   shuffle_band: 10
   max_source_share: 0.5
+  love_factor: 1.5
+  hate_factor: 0.3
+  feedback_track_cap: 50
+  similar_recordings_limit: 50
+  seed_track_similar_limit: 50
+  seed_track_boost: 1.0
+  seed_track_affinity: 0.8
+  feedback_max_age_s: 900
   deezer_fans_full_scale: 6.9
   deezer_rank_full_scale: 900000
   lb_listeners_full_scale: 5.5

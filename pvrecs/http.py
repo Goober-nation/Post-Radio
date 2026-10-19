@@ -47,8 +47,9 @@ class Http:
                 time.sleep(wait)
             self._last[host] = time.monotonic()
 
-    def request(self, method, url, params=None, body=None, headers=None, shape=None, max_age=None):
-        key = self._key(method, url, params, body)
+    def request(self, method, url, params=None, body=None, headers=None, shape=None, max_age=None,
+                cache_params=None, valid=None):
+        key = self._key(method, url, cache_params if cache_params is not None else params, body)
         row = self.db.execute("SELECT t, v FROM c WHERE k=?", (key,)).fetchone()
         if row and (self.offline or time.time() - row[0] < (max_age if max_age is not None else self.ttl)):
             return json.loads(row[1])
@@ -76,6 +77,8 @@ class Http:
                 continue
             if shape:
                 data = shape(data)
+            if valid and not valid(data):
+                return data  # e.g. a Subsonic auth error: report it, never cache it
             self.db.execute("INSERT OR REPLACE INTO c VALUES (?,?,?)", (key, time.time(), json.dumps(data)))
             self.db.commit()
             return data
@@ -92,8 +95,9 @@ class Http:
             self._last[host] = max(self._last.get(host, 0), time.monotonic() + wait - self.min_interval.get(host, 0))
         time.sleep(wait)
 
-    def get(self, url, params=None, headers=None, shape=None, max_age=None):
-        return self.request("GET", url, params=params, headers=headers, shape=shape, max_age=max_age)
+    def get(self, url, params=None, headers=None, shape=None, max_age=None, cache_params=None, valid=None):
+        return self.request("GET", url, params=params, headers=headers, shape=shape, max_age=max_age,
+                            cache_params=cache_params, valid=valid)
 
     def post(self, url, body, headers=None):
         return self.request("POST", url, body=body, headers=headers)

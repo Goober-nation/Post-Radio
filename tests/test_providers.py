@@ -12,7 +12,7 @@ class CannedHttp:
     def __init__(self, routes):
         self.routes = routes  # url suffix -> payload (or callable(params) -> payload)
 
-    def get(self, url, params=None, headers=None, shape=None, max_age=None):
+    def get(self, url, params=None, headers=None, shape=None, max_age=None, cache_params=None, valid=None):
         for suffix, payload in self.routes.items():
             if url.endswith(suffix):
                 return payload(params or {}) if callable(payload) else payload

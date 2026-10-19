@@ -1,7 +1,7 @@
 """Provider interfaces. The engine only talks to these; each source lives in its own adapter module."""
 from abc import ABC, abstractmethod
 
-from ..models import Artist, Edge, History, Track
+from ..models import Artist, Edge, Feedback, History, Track
 
 
 class ArtistResolver(ABC):
@@ -64,3 +64,18 @@ class HistoryProvider(ABC):
 class NoHistory(HistoryProvider):
     def load(self) -> History:
         return History()
+
+
+class FeedbackProvider(ABC):
+    """Loves/hates/ratings from one place (LB, Navidrome, ...), normalised to Feedback scores."""
+
+    name: str
+
+    @abstractmethod
+    def load(self) -> list[Feedback]: ...
+
+
+class TrackSimilarity(ABC):
+    @abstractmethod
+    def similar(self, track: Track, limit: int) -> list[tuple[Track, float]]:
+        """(similar track, weight 0..1), strongest first. track needs a recording MBID."""

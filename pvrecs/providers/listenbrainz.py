@@ -4,10 +4,11 @@ from troi.recording_search_service import RecordingSearchByArtistService, Record
 
 from ..http import Http
 from ..models import Artist, Edge, Track, log_popularity
-from . import RadioSource, SimilarArtists, TagRadio, TopTracks
+from . import RadioSource, SimilarArtists, TagRadio, TopTracks, TrackSimilarity
 
 API = "https://api.listenbrainz.org/1"
 LABS = "https://labs.api.listenbrainz.org"
+SIMILAR_REC_ALGO = "session_based_days_9000_session_300_contribution_5_threshold_15_limit_50_skip_30"
 SIMILAR_ALGO = "session_based_days_7500_session_300_contribution_5_threshold_10_limit_100_filter_True_skip_30"
 LISTENERS_FULL_SCALE = 5.5  # log10 LB listeners of a superstar
 
@@ -54,6 +55,29 @@ class LBSimilar(SimilarArtists):
         top = max((float(a["score"]) for a in rows), default=1.0)
         return [Edge(Artist(a["name"], mbid=a["artist_mbid"]), 0.5 + 0.5 * float(a["score"]) / top, self.name)
                 for a in rows]
+
+
+class LBSimilarRecordings(TrackSimilarity):
+    """Track-to-track similarity from LB listening sessions. Tokenless."""
+
+    def __init__(self, http: Http):
+        self.http = http
+
+    def similar(self, track: Track, limit: int) -> list[tuple[Track, float]]:
+        if not track.recording_mbid:
+            return []
+        d = self.http.post(f"{LABS}/similar-recordings/json",
+                           [{"recording_mbids": [track.recording_mbid], "algorithm": SIMILAR_REC_ALGO}])
+        rows = [r for r in (d or []) if r.get("recording_mbid") and r["recording_mbid"] != track.recording_mbid]
+        rows = rows[:limit]
+        top = max((float(r.get("score") or 0) for r in rows), default=1.0) or 1.0
+        out = []
+        for r in rows:
+            mbids = r.get("artist_credit_mbids") or [None]
+            t = Track(r["recording_name"], Artist(r["artist_credit_name"], mbid=mbids[0]),
+                      recording_mbid=r["recording_mbid"], sources={"lb-similar-rec"})
+            out.append((t, float(r.get("score") or 0) / top))
+        return out
 
 
 class LBTopTracks(TopTracks):

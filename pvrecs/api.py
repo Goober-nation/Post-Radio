@@ -23,11 +23,12 @@ from . import config as config_mod
 from .engine import Params, Providers, Radio
 from .http import Http
 from .models import Track
-from .providers import HistoryProvider, NoHistory
+from .providers import FeedbackProvider, HistoryProvider, NoHistory
 from .providers.deezer import Deezer
+from .providers.feedback import LBFeedback, NavidromeFeedback
 from .providers.history import FileHistory, ListenBrainzHistory
 from .providers.lb_playlists import KINDS, LBCreatedFor
-from .providers.listenbrainz import LBSimilar, LBTopTracks, TroiRadio, TroiTagRadio
+from .providers.listenbrainz import LBSimilar, LBSimilarRecordings, LBTopTracks, TroiRadio, TroiTagRadio
 from .providers.musicbrainz import MusicBrainz
 
 SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
@@ -70,10 +71,12 @@ def track_json(t: Track) -> dict:
 
 class Recommender:
     def __init__(self, cfg: config_mod.Config | None = None, *, token: str | None = None, lb_user: str | None = None,
-                 history: HistoryProvider | None = None, offline: bool = False,
+                 history: HistoryProvider | None = None, feedback: list[FeedbackProvider] | None = None,
+                 offline: bool = False,
                  log: Callable[[str], None] = lambda _m: None):
         """token/lb_user default to $LISTENBRAINZ_TOKEN / $LISTENBRAINZ_USERNAME (subject to cfg.sources).
-        Pass `history` to supply listening history from anywhere (e.g. a multi-scrobbler/Maloja adapter)."""
+        Pass `history` / `feedback` to supply listening history or loves/hates from anywhere
+        (e.g. a multi-scrobbler/Maloja adapter); otherwise both come from config."""
         self.cfg = cfg or config_mod.load()
         s, a = self.cfg.sources, self.cfg.advanced
         # token: None = take $LISTENBRAINZ_TOKEN, "" = explicitly tokenless
@@ -85,6 +88,7 @@ class Recommender:
                          min_interval=a.min_interval_s, max_attempts=a.max_attempts, backoff_cap_s=a.backoff_cap_s)
         self.log = log
         self.history = history or self._history_from_config()
+        self.feedback = feedback if feedback is not None else self._feedback_from_config()
         self.cache = ResultCache(self.cfg.storage.result_ttl_s, self.cfg.storage.result_cache_size)
         self.radio = Radio(self._providers(), self.cfg.advanced, log=log)
         self.created_for = LBCreatedFor(self.http, self.token)
@@ -99,6 +103,28 @@ class Recommender:
             return ListenBrainzHistory(self.http, self.lb_user, self.token)
         return NoHistory()
 
+    def _feedback_from_config(self) -> list[FeedbackProvider]:
+        f, a = self.cfg.feedback, self.cfg.advanced
+        if not f.enabled:
+            return []
+        out: list[FeedbackProvider] = []
+        for name in f.sources:
+            if name == "lb":
+                user = f.lb_user or self.lb_user
+                if user:
+                    out.append(LBFeedback(self.http, user, self.token, a.feedback_max_age_s))
+            elif name == "navidrome":
+                url = f.navidrome_url or os.environ.get("NAVIDROME_URL")
+                user, pw = os.environ.get("NAVIDROME_USERNAME"), os.environ.get("NAVIDROME_PASSWORD")
+                if url and user and pw:
+                    out.append(NavidromeFeedback(self.http, url, user, pw, a.feedback_max_age_s))
+                else:
+                    self.log("feedback: navidrome skipped (needs feedback.navidrome_url or $NAVIDROME_URL, "
+                             "$NAVIDROME_USERNAME, $NAVIDROME_PASSWORD)")
+            else:
+                raise ValueError(f"feedback.sources: unknown source '{name}' (navidrome | lb)")
+        return out
+
     def _providers(self) -> Providers:
         http, a, token = self.http, self.cfg.advanced, self.token
         mb = MusicBrainz(http)
@@ -109,7 +135,8 @@ class Recommender:
             tracks.append(LBTopTracks(http, token, a.lb_listeners_full_scale, a.lb_min_listener_share))
         return Providers(resolver=mb, similar=[LBSimilar(http), dz, mb], tracks=tracks,
                          radios=[dz, TroiRadio(http, token, a.troi_window_width)], tagger=mb,
-                         tag_radio=TroiTagRadio(http, token, a.troi_window_width), history=self.history)
+                         tag_radio=TroiTagRadio(http, token, a.troi_window_width), history=self.history,
+                         feedback=self.feedback, track_similarity=LBSimilarRecordings(http))
 
     # ------------------------------------------------------------------ radio
     def generate(self, *, artist: str | None = None, track: str | None = None, artist_mbid: str | None = None,
@@ -199,4 +226,4 @@ class Recommender:
     def with_config(self, **section_overrides) -> "Recommender":
         """Copy with e.g. defaults=replace(cfg.defaults, n=20) — handy for per-request tweaks."""
         return Recommender(replace(self.cfg, **section_overrides), token=self.token, lb_user=self.lb_user,
-                           history=self.history, log=self.log)
+                           history=self.history, feedback=self.feedback, log=self.log)

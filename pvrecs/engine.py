@@ -13,9 +13,10 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from .config import Advanced
-from .models import Artist, Edge, History, Track
+from .models import Artist, Edge, History, Taste, Track
 from .providers import (
     ArtistResolver,
+    FeedbackProvider,
     HistoryProvider,
     NoHistory,
     RadioSource,
@@ -23,6 +24,7 @@ from .providers import (
     Tagger,
     TagRadio,
     TopTracks,
+    TrackSimilarity,
 )
 
 
@@ -133,6 +135,8 @@ class Providers:
     tagger: Tagger | None = None
     tag_radio: TagRadio | None = None
     history: HistoryProvider = field(default_factory=NoHistory)
+    feedback: list[FeedbackProvider] = field(default_factory=list)  # priority order
+    track_similarity: TrackSimilarity | None = None
 
 
 class Radio:
@@ -141,7 +145,9 @@ class Radio:
         self.a = adv or Advanced()
         self.junk = re.compile(self.a.junk_title_pattern, re.IGNORECASE)
         self._history: History | None = None
+        self._taste: Taste | None = None
         self.seed_pop: float | None = None
+        self.track_boost: dict[str, float] = {}
 
     def history(self) -> History:
         if self._history is None:
@@ -149,6 +155,47 @@ class Radio:
             if self._history:
                 self.log(f"history: {self._history.summary()}")
         return self._history
+
+    def taste(self) -> Taste:
+        if self._taste is None:
+            items = []
+            for prov in self.p.feedback:
+                try:
+                    got = prov.load()
+                except (RuntimeError, OSError, ValueError) as e:  # e.g. Navidrome down: run without it
+                    self.log(f"feedback from {prov.name} unavailable: {e}")
+                    continue
+                self.log(f"feedback: {len(got)} opinions from {prov.name}")
+                items += got
+            self._taste = Taste(items, priority=[prov.name for prov in self.p.feedback])
+            if self._taste:
+                self.log(f"taste: {self._taste.summary()}")
+        return self._taste
+
+    def taste_factor(self, score: float) -> float:
+        if score > 0:
+            return self.a.love_factor ** score
+        if score < 0:
+            return self.a.hate_factor ** -score
+        return 1.0
+
+    def _track_layer(self) -> dict[str, float]:
+        """Loved/hated recordings spread to their LB-similar recordings, scaled by similarity."""
+        boosts: dict[str, float] = {}
+        sim = self.p.track_similarity
+        if not sim:
+            return boosts
+        for f in self.taste().strongest(self.a.feedback_track_cap):
+            src = Track(f.title or "", Artist(f.artist, mbid=f.artist_mbid), recording_mbid=f.recording_mbid)
+            for t, w in sim.similar(src, self.a.similar_recordings_limit):
+                factor = self.taste_factor(f.score * w)
+                for k in filter(None, (t.recording_mbid, t.key)):
+                    boosts[k] = boosts.get(k, 1.0) * factor
+        lo, hi = self.a.hate_factor, self.a.love_factor
+        return {k: min(hi, max(lo, v)) for k, v in boosts.items()}
+
+    def _boost(self, t: Track) -> float:
+        return self.track_boost.get(t.recording_mbid or "", 0.0) or self.track_boost.get(t.key, 1.0)
 
     # ---------- seed ----------
     def resolve(self, artist=None, track=None, artist_mbid=None, recording_mbid=None) -> tuple[Artist, Track | None]:
@@ -212,6 +259,7 @@ class Radio:
 
     def artist_weight(self, n: Node, p: Params) -> float:
         w = n.affinity * hop_fit(n.hop, p) * artist_pop_fit(n.artist.popularity, p, self.seed_pop)
+        w *= self.taste_factor(self.taste().artist(n.artist))
         listens = self.history().plays(n.artist)
         if listens:
             fam = min(1.0, math.log1p(listens) / math.log(self.a.familiarity_saturation))
@@ -226,13 +274,27 @@ class Radio:
             out += [t for t in tracks if not self.junk.search(t.title)]
         return out
 
-    def candidates(self, g: Graph, seed: Node, p: Params) -> list[tuple[Track, Node]]:
+    def candidates(self, g: Graph, seed: Node, p: Params,
+                   seed_track: Track | None = None) -> list[tuple[Track, Node]]:
         # pass 1: graph-only weight picks a shortlist; fetching their catalogues also fills in artist
         # popularity, which pass 2 folds in (this is what keeps deep exploration off the mainstream)
-        shortlist = sorted(g.nodes.values(), key=lambda n: -self.artist_weight(n, p))[:max(self.a.shortlist_min, p.n)]
+        by_weight = sorted(g.nodes.values(), key=lambda n: -self.artist_weight(n, p))
+        shortlist = by_weight[:max(self.a.shortlist_min, p.n)]
         catalogue = {n.artist.key: self._top_tracks(n.artist) for n in shortlist}
-        nodes = sorted(shortlist, key=lambda n: -self.artist_weight(n, p))[:max(self.a.candidate_artists_min, p.n // 2)]
+        nodes = sorted(shortlist, key=lambda n: -self.artist_weight(n, p))
+        nodes = nodes[:max(self.a.candidate_artists_min, p.n // 2)]
         out = [(t, n) for n in nodes for t in catalogue[n.artist.key]]
+        if seed_track and self.p.track_similarity:
+            for t, w in self.p.track_similarity.similar(seed_track, self.a.seed_track_similar_limit):
+                hop = 0 if t.artist.key == seed.artist.key else 1
+                tn = g.node_for(t.artist, hop, self.a.seed_track_affinity * w, "track-sim", seed)
+                t.artist = tn.artist
+                t.popularity = p.pop  # unknown; don't let the popularity fit decide these
+                t.sources = t.sources | {"track-sim"}
+                bonus = 1 + self.a.seed_track_boost * w
+                for k in filter(None, (t.recording_mbid, t.key)):
+                    self.track_boost[k] = self.track_boost.get(k, 1.0) * bonus
+                out.append((t, tn))
         # radio around the seed and its closest neighbours brings in artists outside the graph
         for n in [seed] + [n for n in nodes if n.hop == 1][: self.a.radio_neighbours]:
             for prov in self.p.radios:
@@ -249,11 +311,13 @@ class Radio:
         seed_artist, seed_track = self.resolve(**seed_args)
         self.log(f"seed: {seed_artist.name} ({seed_artist.mbid})" + (f" / {seed_track.title}" if seed_track else ""))
         history = self.history()
+        taste = self.taste()
+        self.track_boost = self._track_layer() if taste else {}
         g = self.build_graph(seed_artist, p)
         seed = g.nodes[seed_artist.key]
         self._top_tracks(seed.artist)  # fills seed popularity before anything is weighted
         self.seed_pop = seed.artist.popularity
-        cands = self.candidates(g, seed, p)
+        cands = self.candidates(g, seed, p, seed_track)
 
         merged: dict[str, tuple[Track, Node]] = {}
         for t, n in cands:
@@ -278,6 +342,7 @@ class Radio:
                     continue
                 pen = self.a.heard_penalty
             s = self.artist_weight(n, p) * pop_fit(t.popularity, p) * pen
+            s *= self.taste_factor(taste.track(t)) * self._boost(t)
             s *= 1 + self.a.multi_source_bonus * (len(t.sources) - 1)
             s *= 1 - self.a.jitter / 2 + self.a.jitter * rng.random()  # keep repeated runs from being identical
             scored.append((s, t, n))
@@ -293,7 +358,7 @@ class Radio:
                      "track": seed_track.title if seed_track else None, "popularity": self.seed_pop},
             "explore": p.explore, "popularity": p.popularity, "mode": p.radio_mode, "graph_size": len(g.nodes),
             "candidates": len(merged),
-            "tracks": [self._row(s, t, n, g, history) for b in bands for (s, t, n) in b],
+            "tracks": [self._row(s, t, n, g, history, taste, self._boost(t)) for b in bands for (s, t, n) in b],
         }
 
     def _select(self, scored, p: Params):
@@ -321,10 +386,12 @@ class Radio:
         return picked
 
     @staticmethod
-    def _row(s: float, t: Track, n: Node, g: Graph, history: History) -> dict:
+    def _row(s: float, t: Track, n: Node, g: Graph, history: History, taste: Taste, boost: float) -> dict:
         return {
             "artist": t.artist.name, "title": t.title, "score": round(s, 4), "hop": n.hop,
             "popularity": round(t.popularity, 2), "artist_popularity": n.artist.popularity,
             "sources": sorted(t.sources), "recording_mbid": t.recording_mbid, "deezer_id": t.deezer_id,
             "path": g.path(n), "via": sorted(n.via), "known_artist": bool(history.plays(n.artist)),
+            "taste": {"artist": round(taste.artist(n.artist), 2), "track": taste.track(t),
+                      "similar_boost": round(boost, 2)},
         }

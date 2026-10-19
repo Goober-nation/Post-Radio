@@ -33,10 +33,24 @@ Results are held in memory (`storage.result_ttl_s`, `result_cache_size`) until s
 HTTP (`pvrecs serve`): `POST /radio`, `GET /deep-cuts`, `GET /results/{id}`, `POST /results/{id}/save`,
 `GET /saved`, `GET /saved/{name}`.
 
+## Taste (loves / hates / ratings)
+
+On by default (`feedback.enabled`, or `--no-feedback`). Sources, in priority order (the first with an
+opinion on a track wins): **Navidrome** (stars = +1; ratings 1★..5★ map to −1..+1 with 3★ neutral; artist
+and album stars/ratings count for the artist) and **LB** loves/hates (tokenless).
+Effects:
+- An artist's weight is multiplied by `love_factor` (1.5) to the power of a positive score, or by
+  `hate_factor` (0.3) to the power of minus a negative score.
+- Same for an exact track.
+- The 50 strongest track opinions spread to their LB similar-recordings, scaled by similarity.
+
+A track seed also injects its own similar recordings. Navidrome needs `feedback.navidrome_url` (or
+`$NAVIDROME_URL`), `$NAVIDROME_USERNAME` and `$NAVIDROME_PASSWORD`.
+
 ## Config
 
 Copy `config.example.yaml` to `config.yaml`; only include keys you change. The user sections are
-`defaults`, `storage`, `sources` and `server`. `advanced` holds every algorithm constant (weights,
+`defaults`, `storage`, `sources`, `feedback` and `server`. `advanced` holds every algorithm constant (weights,
 fanouts, curve widths, caps, rate limits). Unknown keys are an error.
 
 ## Pipeline
