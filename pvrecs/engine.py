@@ -11,6 +11,7 @@ import random
 import re
 from collections import defaultdict
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 from .config import Advanced
@@ -161,6 +162,14 @@ class Radio:
                 self.log(f"history: {self._history.summary()}")
         return self._history
 
+    def _map(self, fn, items: list) -> list:
+        """Run independent fetches concurrently (order kept). Per-host limits live in Http, so this
+        only overlaps network latency; it never raises the request rate past what each API allows."""
+        if len(items) <= 1:
+            return [fn(x) for x in items]
+        with ThreadPoolExecutor(max_workers=self.a.fetch_workers) as pool:
+            return list(pool.map(fn, items))
+
     def taste(self) -> Taste:
         if self._taste is None:
             items = []
@@ -190,9 +199,12 @@ class Radio:
         sim = self.p.track_similarity
         if not sim:
             return boosts
-        for f in self.taste().strongest(self.a.feedback_track_cap):
-            src = Track(f.title or "", Artist(f.artist, mbid=f.artist_mbid), recording_mbid=f.recording_mbid)
-            for t, w in sim.similar(src, self.a.similar_recordings_limit):
+        opinions = self.taste().strongest(self.a.feedback_track_cap)
+        sims = self._map(lambda f: sim.similar(
+            Track(f.title or "", Artist(f.artist, mbid=f.artist_mbid), recording_mbid=f.recording_mbid),
+            self.a.similar_recordings_limit), opinions)
+        for f, similar in zip(opinions, sims, strict=True):
+            for t, w in similar:
                 factor = self.taste_factor(f.score * w)
                 for k in filter(None, (t.recording_mbid, t.key)):
                     boosts[k] = boosts.get(k, 1.0) * factor
@@ -237,16 +249,20 @@ class Radio:
         for hop in range(1, p.max_hops + 1):
             new: list[Node] = []
             start = len(g.nodes)
-            for src in frontier:
+            k = a.fanout.get(hop, a.fanout[max(a.fanout)])
+            jobs = [(src, prov) for src in frontier if not src.artist.virtual
+                    for prov in self.p.similar if hop <= prov.max_hop]
+            fetched = self._map(lambda job, k=k: job[1].neighbours(job[0].artist, k), jobs)  # network, in parallel
+            edges_by_src: dict[str, list[Edge]] = defaultdict(list)
+            for (src, _), edges in zip(jobs, fetched, strict=True):
+                edges_by_src[src.artist.key] += edges
+            for src in frontier:  # graph mutation stays single-threaded and in frontier order
                 if len(g.nodes) - start >= budget[hop]:
                     break
                 if src.artist.virtual:
                     new += self._genre_neighbours(g, src, p)
                     continue
-                for prov in self.p.similar:
-                    if hop <= prov.max_hop:
-                        k = a.fanout.get(hop, a.fanout[max(a.fanout)])
-                        new += [self._link(g, src, e, hop) for e in prov.neighbours(src.artist, k)]
+                new += [self._link(g, src, e, hop) for e in edges_by_src[src.artist.key]]
             if hop == 1 and len(g.nodes) - 1 < a.sparse_graph and not seed.virtual:
                 new += self._tag_neighbours(g, frontier[0], p)
             ranked = sorted({n.artist.key: n for n in new if n.hop == hop}.values(), key=lambda n: -n.affinity)
@@ -307,7 +323,8 @@ class Radio:
         # popularity, which pass 2 folds in (this is what keeps deep exploration off the mainstream)
         by_weight = sorted(g.nodes.values(), key=lambda n: -self.artist_weight(n, p))
         shortlist = by_weight[:max(self.a.shortlist_min, p.n)]
-        catalogue = {n.artist.key: self._top_tracks(n.artist) for n in shortlist}
+        fetched = self._map(lambda n: self._top_tracks(n.artist), shortlist)  # network, in parallel
+        catalogue = {n.artist.key: tracks for n, tracks in zip(shortlist, fetched, strict=True)}
         nodes = sorted(shortlist, key=lambda n: -self.artist_weight(n, p))
         nodes = nodes[:max(self.a.candidate_artists_min, p.n // 2)]
         out = [(t, n) for n in nodes for t in catalogue[n.artist.key]]
@@ -331,13 +348,15 @@ class Radio:
                     t.artist = tn.artist
                     out.append((t, tn))
         radio_seeds = [] if seed.artist.virtual else [seed]
-        for n in radio_seeds + [n for n in nodes if n.hop == 1][: self.a.radio_neighbours]:
-            for prov in self.p.radios:
-                for t in prov.radio(n.artist, p.pop, p.radio_mode):
-                    hop = 0 if t.artist.key == seed.artist.key else n.hop + 1
-                    rn = g.node_for(t.artist, hop, n.affinity * self.a.source_weights["radio"], "radio", n)
-                    t.artist = rn.artist
-                    out.append((t, rn))
+        jobs = [(n, prov) for n in radio_seeds + [n for n in nodes if n.hop == 1][: self.a.radio_neighbours]
+                for prov in self.p.radios]
+        streams = self._map(lambda job: job[1].radio(job[0].artist, p.pop, p.radio_mode), jobs)
+        for (n, _), tracks in zip(jobs, streams, strict=True):
+            for t in tracks:
+                hop = 0 if t.artist.key == seed.artist.key else n.hop + 1
+                rn = g.node_for(t.artist, hop, n.affinity * self.a.source_weights["radio"], "radio", n)
+                t.artist = rn.artist
+                out.append((t, rn))
         return out
 
     # ---------- ranking ----------
@@ -346,13 +365,18 @@ class Radio:
         self._genre_query = (seed_args.get("genres") or [], seed_args.get("genre_op") or "or")
         seed_artist, seed_track = self.resolve(**seed_args)
         self.log(f"seed: {seed_artist.name} ({seed_artist.mbid})" + (f" / {seed_track.title}" if seed_track else ""))
-        history = self.history()
-        taste = self.taste()
-        self.track_boost = self._track_layer() if taste else {}
-        g = self.build_graph(seed_artist, p)
-        seed = g.nodes[seed_artist.key]
-        if not seed.artist.virtual:
-            self._top_tracks(seed.artist)  # fills seed popularity before anything is weighted
+
+        def personal():  # history + taste don't affect graph building, so they load alongside it
+            taste = self.taste()
+            return self.history(), taste, self._track_layer() if taste else {}
+
+        with ThreadPoolExecutor(max_workers=1) as bg:
+            pending = bg.submit(personal)
+            g = self.build_graph(seed_artist, p)
+            seed = g.nodes[seed_artist.key]
+            if not seed.artist.virtual:
+                self._top_tracks(seed.artist)  # fills seed popularity before anything is weighted
+            history, taste, self.track_boost = pending.result()  # joined before anything is weighted
         self.seed_pop = seed.artist.popularity
         cands = self.candidates(g, seed, p, seed_track)
 

@@ -1,6 +1,7 @@
 """Listening-history suppliers. All produce a models.History; the engine never knows which one it got."""
 import csv
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from ..http import Http
@@ -20,13 +21,20 @@ class ListenBrainzHistory(HistoryProvider):
         self.max_artists, self.max_tracks = max_artists, max_tracks
 
     def _pages(self, kind: str, cap: int):
-        for off in range(0, cap, 100):
+        """First page tells us the total; the rest are fetched in parallel (Http enforces LB's rate)."""
+        def page(off):
             d = self.http.get(f"{LB_API}/stats/user/{self.user}/{kind}",
                               params={"count": 100, "offset": off, "range": "all_time"}, headers=self.headers)
-            rows = ((d or {}).get("payload") or {}).get(kind) or []
-            yield from rows
-            if len(rows) < 100:
-                return
+            return ((d or {}).get("payload") or {})
+
+        first = page(0)
+        rows = list(first.get(kind) or [])
+        total = min(cap, first.get(f"total_{kind[:-1]}_count") or len(rows))
+        offsets = list(range(100, total, 100)) if len(rows) == 100 else []
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            for p in pool.map(page, offsets):
+                rows += p.get(kind) or []
+        return rows
 
     def load(self) -> History:
         artists = []

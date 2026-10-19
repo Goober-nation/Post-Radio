@@ -1,6 +1,7 @@
 """Feedback adapters: ListenBrainz loves/hates and Navidrome stars + 1-5 star ratings."""
 import hashlib
 import secrets
+from concurrent.futures import ThreadPoolExecutor
 
 from ..config import Advanced
 from ..http import Http
@@ -20,24 +21,31 @@ class LBFeedback(FeedbackProvider):
         self.http, self.user, self.max_age, self.cap = http, user, max_age_s, cap
         self.headers = {"Authorization": f"Token {token}"} if token else None
 
+    def _page(self, score: int, off: int) -> dict:
+        return self.http.get(f"{LB_API}/feedback/user/{self.user}/get-feedback",
+                             params={"score": score, "count": 100, "offset": off, "metadata": "true"},
+                             headers=self.headers, max_age=self.max_age) or {}
+
     def load(self) -> list[Feedback]:
-        out = []
+        rows = []
         for score in (1, -1):
-            for off in range(0, self.cap, 100):
-                d = self.http.get(f"{LB_API}/feedback/user/{self.user}/get-feedback",
-                                  params={"score": score, "count": 100, "offset": off, "metadata": "true"},
-                                  headers=self.headers, max_age=self.max_age)
-                rows = (d or {}).get("feedback") or []
-                for f in rows:
-                    m = f.get("track_metadata") or {}
-                    mapping = m.get("mbid_mapping") or {}
-                    if not (m.get("artist_name") and m.get("track_name")):
-                        continue
-                    out.append(Feedback(m["artist_name"], m["track_name"], float(score), self.name,
-                                        artist_mbid=(mapping.get("artist_mbids") or [None])[0],
-                                        recording_mbid=f.get("recording_mbid") or mapping.get("recording_mbid")))
-                if len(rows) < 100:
-                    break
+            first = self._page(score, 0)
+            got = [(score, f) for f in first.get("feedback") or []]
+            total = min(self.cap, first.get("total_count") or len(got))
+            offsets = list(range(100, total, 100)) if len(got) == 100 else []
+            with ThreadPoolExecutor(max_workers=4) as pool:  # Http enforces LB's rate window
+                for page in pool.map(lambda off, score=score: self._page(score, off), offsets):
+                    got += [(score, f) for f in page.get("feedback") or []]
+            rows += got
+        out = []
+        for score, f in rows:
+            m = f.get("track_metadata") or {}
+            mapping = m.get("mbid_mapping") or {}
+            if not (m.get("artist_name") and m.get("track_name")):
+                continue
+            out.append(Feedback(m["artist_name"], m["track_name"], float(score), self.name,
+                                artist_mbid=(mapping.get("artist_mbids") or [None])[0],
+                                recording_mbid=f.get("recording_mbid") or mapping.get("recording_mbid")))
         return out
 
 

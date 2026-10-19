@@ -11,8 +11,8 @@ RANK_FULL_SCALE = 900_000  # Deezer track 'rank' of a global hit
 
 
 class Deezer(SimilarArtists, TopTracks, RadioSource, GenreSource):
-    """`known_titles` lets Deezer tell same-named artists apart: given an artist with an MBID, it
-    returns normalised titles that artist is known to have recorded (e.g. from MusicBrainz)."""
+    """`known_titles` lets Deezer tell same-named artists apart: given an artist with an MBID, it returns
+    normalised titles that artist is known to have recorded. Only consulted when the name is ambiguous."""
 
     name = "deezer"
 
@@ -35,14 +35,13 @@ class Deezer(SimilarArtists, TopTracks, RadioSource, GenreSource):
             return artist.deezer_id or None
         cands = self._candidates(artist.name)
         match = None
-        if cands and artist.mbid and self.known_titles:
-            titles = self.known_titles(artist)
-            if titles:
-                match = next((c for c in cands if len(self._titles(c.deezer_id) & titles) >= 2), None)
-            elif len(cands) == 1:
-                match = cands[0]
+        if len(cands) == 1:
+            match = cands[0]  # a single exact-name hit: verifying it would cost calls and prove little
+        elif cands and artist.mbid and self.known_titles:
+            titles = self.known_titles(artist)  # same-named artists (two 'Bilal's): pick by shared titles
+            match = next((c for c in cands if len(self._titles(c.deezer_id) & titles) >= 2), None) if titles else None
         elif cands:
-            match = cands[0]
+            match = cands[0]  # no way to tell them apart: most-followed
         artist.deezer_id = match.deezer_id if match else 0
         if match:
             artist.absorb(match)

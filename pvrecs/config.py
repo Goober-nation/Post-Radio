@@ -116,10 +116,19 @@ class Advanced:
     lb_listeners_full_scale: float = 5.5  # log10 LB listeners of a superstar
     lb_min_listener_share: float = 0.002  # drop recordings below this share of the artist's top track
     troi_window_width: int = 34
-    # rate limits
+    # rate limits (per host; "default" covers the rest)
     min_interval_s: dict[str, float] = field(default_factory=lambda: {
-        "musicbrainz.org": 1.1, "api.deezer.com": 0.12, "default": 0.05})
+        "musicbrainz.org": 1.1,  # hard limit 1 req/s
+        "api.deezer.com": 0.12,  # documented ~50 req / 5 s
+        "api.listenbrainz.org": 0.34,  # 30 req / 10 s window, also tracked via X-RateLimit headers
+        "labs.api.listenbrainz.org": 0.1,
+        "default": 0.05})
+    max_in_flight: dict[str, int] = field(default_factory=lambda: {
+        "musicbrainz.org": 1, "api.deezer.com": 6, "api.listenbrainz.org": 4, "labs.api.listenbrainz.org": 4,
+        "default": 4})
     max_attempts: dict[str, int] = field(default_factory=lambda: {"musicbrainz.org": 8, "default": 4})
+    ratelimit_floor: int = 2  # LB: when X-RateLimit-Remaining drops to this, wait for the window to reset
+    fetch_workers: int = 8  # threads for independent fetches (catalogues, neighbours, similar recordings)
     backoff_cap_s: float = 60.0
 
 

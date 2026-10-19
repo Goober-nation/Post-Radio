@@ -100,8 +100,18 @@ advanced:
   min_interval_s:
     musicbrainz.org: 1.1
     api.deezer.com: 0.12
+    api.listenbrainz.org: 0.34
+    labs.api.listenbrainz.org: 0.1
     default: 0.05
+  max_in_flight:
+    musicbrainz.org: 1
+    api.deezer.com: 6
+    api.listenbrainz.org: 4
+    labs.api.listenbrainz.org: 4
+    default: 4
   max_attempts:
     musicbrainz.org: 8
     default: 4
+  ratelimit_floor: 2
+  fetch_workers: 8
   backoff_cap_s: 60.0

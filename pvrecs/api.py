@@ -22,7 +22,7 @@ from pathlib import Path
 from . import config as config_mod
 from .engine import Params, Providers, Radio
 from .http import Http
-from .models import Track
+from .models import Track, norm
 from .providers import FeedbackProvider, HistoryProvider, NoHistory
 from .providers.deezer import Deezer
 from .providers.feedback import LBFeedback, NavidromeFeedback
@@ -86,7 +86,8 @@ class Recommender:
             self.token = None
         self.lb_user = lb_user or s.lb_user or os.environ.get("LISTENBRAINZ_USERNAME") or None
         self.http = Http(self.cfg.path(self.cfg.storage.http_cache), ttl=self.cfg.storage.http_ttl_s, offline=offline,
-                         min_interval=a.min_interval_s, max_attempts=a.max_attempts, backoff_cap_s=a.backoff_cap_s)
+                         min_interval=a.min_interval_s, max_attempts=a.max_attempts, backoff_cap_s=a.backoff_cap_s,
+                         max_in_flight=a.max_in_flight, ratelimit_floor=a.ratelimit_floor)
         self.log, self.offline = log, offline
         st = self.cfg.storage
         store_path = (self.cfg.path(st.feedback_file) if st.feedback_file
@@ -135,11 +136,18 @@ class Recommender:
     def _providers(self) -> Providers:
         http, a, token = self.http, self.cfg.advanced, self.token
         mb = MusicBrainz(http)
-        dz = Deezer(http, known_titles=mb.recording_titles, fans_full_scale=a.deezer_fans_full_scale,
+        lb_top = LBTopTracks(http, token, a.lb_listeners_full_scale, a.lb_min_listener_share) if token else None
+
+        def known_titles(artist):  # LB titles are free (no 1 req/s limit); MB only as the fallback
+            if lb_top:
+                titles = {norm(t.title) for t in lb_top.top_tracks(artist, 200)}
+                if titles:
+                    return titles
+            return mb.recording_titles(artist)
+
+        dz = Deezer(http, known_titles=known_titles, fans_full_scale=a.deezer_fans_full_scale,
                     rank_full_scale=a.deezer_rank_full_scale)
-        tracks = [dz]
-        if token:  # LB's popularity endpoint is the only one that needs a token
-            tracks.append(LBTopTracks(http, token, a.lb_listeners_full_scale, a.lb_min_listener_share))
+        tracks = [dz] + ([lb_top] if lb_top else [])  # LB's popularity endpoint is the only one needing a token
         tags = TroiTagRadio(http, token, a.troi_window_width)
         return Providers(resolver=mb, similar=[LBSimilar(http), dz, mb], tracks=tracks,
                          radios=[dz, TroiRadio(http, token, a.troi_window_width)], tagger=mb, tag_radio=tags,
