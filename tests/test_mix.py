@@ -66,3 +66,20 @@ def test_api_mix_overrides_and_validation(rec):  # noqa: F811
         rec._mix({"spotify": 0.5})
     with pytest.raises(ValueError, match="must be in"):
         rec._mix({"troi": 2})
+
+
+def test_capped_track_sim_leaves_no_boost():
+    from test_feedback import FakeSim
+
+    class TrackResolver(Resolver):
+        def find_recording(self, a, title):
+            return Track(title, Artist("Seed", mbid="S"), recording_mbid="s1")
+
+    def run(cap):
+        r = Radio(Providers(resolver=TrackResolver(), similar=[Similar()], tracks=[Tracks()],
+                            track_similarity=FakeSim()), log=lambda *_: None)
+        r.generate(Params(0.5, n=5, seed=1, mix={"track-sim": cap, "lb": 1.0}), track="Seed - x")
+        return r.track_boost
+
+    assert run(1.0).get("b3") == 2.0
+    assert "b3" not in run(0.0)  # off means off: no boost left behind for other streams to pick up

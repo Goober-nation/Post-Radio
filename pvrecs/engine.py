@@ -376,6 +376,7 @@ class Radio:
         nodes = nodes[:max(self.a.candidate_artists_min, p.n // 2)]
         # every candidate is filed under an explicit stream label; caps apply per whole stream at the end
         streams: dict[str, list[tuple[Track, Node]]] = defaultdict(list)
+        seed_bonus: dict[int, float] = {}
         for n in nodes:
             for t in catalogue[n.artist.key]:
                 streams[next(iter(t.sources), "")].append((t, n))  # catalogue tracks carry one source each
@@ -386,9 +387,7 @@ class Radio:
                 t.artist = tn.artist
                 t.popularity = p.pop  # unknown; don't let the popularity fit decide these
                 t.sources = t.sources | {"track-sim"}
-                bonus = 1 + self.a.seed_track_boost * w
-                for k in filter(None, (t.recording_mbid, t.key)):
-                    self.track_boost[k] = self.track_boost.get(k, 1.0) * bonus
+                seed_bonus[id(t)] = 1 + self.a.seed_track_boost * w  # applied only if the track survives the cap
                 streams["track-sim"].append((t, tn))
         if seed.artist.virtual:
             genres, op = self._genre_query
@@ -413,7 +412,12 @@ class Radio:
                 streams[next(iter(t.sources), "")].append((t, rn))
         out: list[tuple[Track, Node]] = []
         for name, entries in streams.items():
-            out += self._cut(entries, name, p)
+            kept = self._cut(entries, name, p)
+            if name == "track-sim":  # a capped-away similar recording must leave no trace, even via other streams
+                for t, _ in kept:
+                    for k in filter(None, (t.recording_mbid, t.key)):
+                        self.track_boost[k] = self.track_boost.get(k, 1.0) * seed_bonus[id(t)]
+            out += kept
         return out
 
     # streams whose order already means something are cut by order, not by popularity distance
