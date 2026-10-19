@@ -1,0 +1,85 @@
+# pvrecs configuration. Copy to config.yaml (or point $PVRECS_CONFIG / --config at it).
+# Only keys you change are needed. See pvrecs/config.py for what each one does.
+
+# ---------------- user settings ----------------
+defaults:
+  explore: 0.5
+  popularity: null
+  n: 50
+  per_artist: 2
+storage:
+  save_dir: ~/.local/share/pvrecs/playlists
+  result_ttl_s: 3600
+  result_cache_size: 50
+  http_cache: .cache/http.sqlite
+  http_ttl_s: 604800
+sources:
+  use_lb_token: true
+  history: lb
+  lb_user: null
+  history_file: null
+server:
+  host: 127.0.0.1
+  port: 8765
+
+# ---------------- advanced: algorithm constants ----------------
+# Changing these alters ranking behaviour; defaults are tuned by hand on ~10 seeds.
+advanced:
+  hop_span: 3.0
+  max_extra_hops: 2
+  radio_mode_thresholds:
+  - 0.34
+  - 0.67
+  pop_slope: 0.85
+  ceiling_base: 0.95
+  ceiling_slope: 0.6
+  slider_ceiling_base: 0.35
+  slider_ceiling_slope: 0.6
+  seed_pop_margin: 0.2
+  hop_width: 1.2
+  pop_width: 0.12
+  artist_pop_width: 0.03
+  unknown_artist_pop_fit: 0.7
+  source_weights:
+    lb: 1.0
+    deezer: 0.85
+    mb: 0.6
+    tag: 0.5
+    radio: 0.5
+  agreement_bonus: 1.15
+  graph_cap: 160
+  fanout:
+    1: 14
+    2: 8
+    3: 6
+  frontier_base: 16
+  frontier_min: 4
+  sparse_graph: 8
+  tag_neighbours: 20
+  tag_radio_recordings: 60
+  shortlist_min: 40
+  candidate_artists_min: 18
+  radio_neighbours: 3
+  top_tracks_limit: 100
+  junk_title_pattern: ^\[|\b(live|demo|remix|edit|instrumental|acoustic version|karaoke|session|rehearsal|bootleg|version|take \d+|dub|mix|unplugged|débranché|phase corrected)\b|\(\d{4}|\d{4}[‐-]\d\d
+  familiarity_strength: 0.9
+  familiarity_saturation: 200
+  heard_skip_explore: 0.3
+  heard_penalty: 0.6
+  multi_source_bonus: 0.2
+  jitter: 0.3
+  shuffle_band: 10
+  max_source_share: 0.5
+  deezer_fans_full_scale: 6.9
+  deezer_rank_full_scale: 900000
+  lb_listeners_full_scale: 5.5
+  lb_min_listener_share: 0.002
+  troi_window_width: 34
+  min_interval_s:
+    musicbrainz.org: 1.1
+    api.deezer.com: 0.12
+    default: 0.05
+  max_attempts:
+    musicbrainz.org: 8
+    default: 4
+  backoff_cap_s: 60.0

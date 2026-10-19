@@ -1,39 +1,29 @@
 """Exploration radio: build an artist graph around a seed, then rank tracks by hop + popularity fit.
 
-explore in [0, 1]:
-  0   -> stay on the seed and its closest neighbours, popular tracks, familiar artists allowed
-  1   -> aim ~3 hops out, low-popularity "deep cuts", skip artists/tracks already in your history
+explore in [0, 1]: how far out in the graph (0 = seed and closest neighbours, 1 = ~3 hops).
+popularity in [0, 1] (optional): 1 = hits by big artists, 0 = deep cuts by small ones.
+  Unset, it follows explore and stays near the seed's own audience size.
+Only models.* types cross into this module; every source is behind a providers.* interface.
 """
 import math
 import random
 import re
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from .sources import Deezer, ListenBrainz, MusicBrainz, Track, norm
-
-JUNK_TITLE = re.compile(r"^\[|\b(live|demo|remix|edit|instrumental|acoustic version|karaoke|session|rehearsal"
-                        r"|bootleg)\b|\(\d{4}|\d{4}[‐-]\d\d", re.I)
-MAX_SOURCE_SHARE = 0.5  # no single-source track type may fill more than half the list
-EDGE_WEIGHT = {"lb": 1.0, "deezer": 0.85, "mb": 0.6, "troi": 0.8, "tag": 0.5}
-SPARSE_GRAPH = 8  # fewer hop-1 artists than this -> pull in tag neighbours
-
-
-@dataclass
-class Node:
-    name: str
-    hop: int
-    affinity: float  # best path product of edge weights from the seed
-    mbid: str | None = None
-    deezer_id: int | None = None
-    via: set = field(default_factory=set)  # sources that produced an edge into this node
-    lb_pop: float | None = None  # artist-level, log-scaled LB listener count, 0..1
-    dz_pop: float | None = None  # same from Deezer fan count, fallback when LB has nothing
-    parent: str | None = None  # name of the node this one was first reached from (for "why")
-
-    @property
-    def popularity(self) -> float | None:
-        return self.lb_pop if self.lb_pop is not None else self.dz_pop
+from .config import Advanced
+from .models import Artist, Edge, History, Track
+from .providers import (
+    ArtistResolver,
+    HistoryProvider,
+    NoHistory,
+    RadioSource,
+    SimilarArtists,
+    Tagger,
+    TagRadio,
+    TopTracks,
+)
 
 
 @dataclass
@@ -42,376 +32,299 @@ class Params:
     n: int = 50
     per_artist: int = 2
     seed: int | None = None
-    popularity: float | None = None  # 0 = deep cuts/obscure artists, 1 = hits; None = derived from explore
+    popularity: float | None = None  # None = derived from explore
+    adv: Advanced = field(default_factory=Advanced)
 
     @property
     def max_hops(self) -> int:
-        return 1 + round(2 * self.explore)
+        return 1 + round(self.adv.max_extra_hops * self.explore)
 
     @property
     def target_hop(self) -> float:
-        return 3 * self.explore
+        return self.adv.hop_span * self.explore
 
     @property
     def pop(self) -> float:
-        """Effective popularity level: 1 = hits, 0 = deep cuts. Defaults to following explore."""
-        return self.popularity if self.popularity is not None else 1 - 0.85 * self.explore
+        return self.popularity if self.popularity is not None else 1 - self.adv.pop_slope * self.explore
 
     @property
-    def target_pop(self) -> float:
-        return self.pop
-
-    @property
-    def target_artist_pop(self) -> float:
+    def artist_pop_ceiling(self) -> float:
+        a = self.adv
         if self.popularity is None:
-            return 0.95 - 0.6 * self.explore
-        return 0.35 + 0.6 * self.popularity
+            return a.ceiling_base - a.ceiling_slope * self.explore
+        return a.slider_ceiling_base + a.slider_ceiling_slope * self.popularity
 
     @property
-    def troi_mode(self) -> str:
-        return "easy" if self.explore < 0.34 else "medium" if self.explore < 0.67 else "hard"
+    def radio_mode(self) -> str:
+        easy, medium = self.adv.radio_mode_thresholds
+        return "easy" if self.explore < easy else "medium" if self.explore < medium else "hard"
 
 
 def hop_fit(hop: int, p: Params) -> float:
-    return math.exp(-((hop - p.target_hop) ** 2) / 1.2)
+    return math.exp(-((hop - p.target_hop) ** 2) / p.adv.hop_width)
 
 
 def pop_fit(pop: float, p: Params) -> float:
-    return math.exp(-((pop - p.target_pop) ** 2) / 0.12)
-
-
-def dz_pop(fans: int) -> float:
-    # calibrated so Deezer fans and LB listeners land on roughly the same scale (Radiohead ~0.95)
-    return min(1.0, math.log10(1 + fans) / 6.9)
+    return math.exp(-((pop - p.pop) ** 2) / p.adv.pop_width)
 
 
 def artist_pop_fit(pop: float | None, p: Params, seed_pop: float | None = None) -> float:
     if pop is None:
-        return 0.7
-    ceiling = p.target_artist_pop
+        return p.adv.unknown_artist_pop_fit
+    ceiling = p.artist_pop_ceiling
     if p.popularity is None and seed_pop is not None:
         # without an explicit slider, stay roughly in the seed's league: an obscure seed shouldn't
         # drift to stadium acts just because they're 2 hops away
-        ceiling = min(ceiling, seed_pop + 0.2)
+        ceiling = min(ceiling, seed_pop + p.adv.seed_pop_margin)
     # only penalise being *more* popular than the target; obscure is never punished at low explore
-    over = max(0.0, pop - ceiling)
-    return math.exp(-(over ** 2) / 0.03)
+    return math.exp(-(max(0.0, pop - ceiling) ** 2) / p.adv.artist_pop_width)
+
+
+@dataclass
+class Node:
+    artist: Artist
+    hop: int
+    affinity: float  # best-path product of edge weights from the seed
+    via: set[str] = field(default_factory=set)
+    parent: str | None = None  # key of the node this was reached from
 
 
 class Graph:
-    def __init__(self):
+    def __init__(self, agreement_bonus: float = Advanced.agreement_bonus):
         self.nodes: dict[str, Node] = {}
+        self.agreement_bonus = agreement_bonus
 
-    def add(self, name, hop, affinity, src, mbid=None, deezer_id=None, fans=None, parent=None) -> Node:
-        key = norm(name)
-        n = self.nodes.get(key)
+    def add(self, artist: Artist, hop: int, affinity: float, source: str, parent: Node | None = None) -> Node:
+        n = self.nodes.get(artist.key)
         if n is None:
-            n = self.nodes[key] = Node(name, hop, affinity, mbid, deezer_id, parent=parent)
+            n = self.nodes[artist.key] = Node(artist, hop, affinity, parent=parent and parent.artist.key)
         else:
+            n.artist.absorb(artist)
             if hop < n.hop or (hop == n.hop and affinity > n.affinity):
-                n.hop, n.affinity, n.parent = hop, max(affinity, n.affinity), parent or n.parent
-            # independent sources agreeing on an edge is strong evidence
-            if src not in n.via:
-                n.affinity = min(1.0, n.affinity * 1.15)
-            n.mbid = n.mbid or mbid
-            n.deezer_id = n.deezer_id or deezer_id
-        n.via.add(src)
-        if fans is not None and n.dz_pop is None:
-            n.dz_pop = dz_pop(fans)
+                n.hop, n.affinity = hop, max(affinity, n.affinity)
+                n.parent = parent.artist.key if parent else n.parent
+            if source not in n.via:
+                n.affinity = min(1.0, n.affinity * self.agreement_bonus)
+        n.via.add(source)
         return n
+
+    def node_for(self, artist: Artist, hop: int, affinity: float, source: str, parent: Node | None) -> Node:
+        """Existing node for this artist, or a new leaf (radio tracks reach outside the graph)."""
+        n = self.nodes.get(artist.key)
+        if n:
+            n.artist.absorb(artist)
+            return n
+        return self.add(artist, hop, affinity, source, parent)
+
+    def path(self, n: Node) -> list[str]:
+        out = [n.artist.name]
+        while n.parent and len(out) < 6:
+            n = self.nodes[n.parent]
+            out.append(n.artist.name)
+        return out[::-1]
+
+
+@dataclass
+class Providers:
+    resolver: ArtistResolver
+    similar: list[SimilarArtists]
+    tracks: list[TopTracks]
+    radios: list[RadioSource] = field(default_factory=list)
+    tagger: Tagger | None = None
+    tag_radio: TagRadio | None = None
+    history: HistoryProvider = field(default_factory=NoHistory)
 
 
 class Radio:
-    def __init__(self, lb: ListenBrainz, mb: MusicBrainz, dz: Deezer, log=print):
-        self.lb, self.mb, self.dz, self.log = lb, mb, dz, log
+    def __init__(self, providers: Providers, adv: Advanced | None = None, log: Callable[[str], None] = print):
+        self.p, self.log = providers, log
+        self.a = adv or Advanced()
+        self.junk = re.compile(self.a.junk_title_pattern, re.IGNORECASE)
+        self._history: History | None = None
         self.seed_pop: float | None = None
-        self._history = None
 
-    def history(self):
+    def history(self) -> History:
         if self._history is None:
-            self._history = self.lb.history()
-            self.log(f"history: {len(self._history[0])} artists, {len(self._history[1])} tracks")
+            self._history = self.p.history.load()
+            if self._history:
+                self.log(f"history: {self._history.summary()}")
         return self._history
 
-    # ---------- seed resolution ----------
-    def resolve(self, artist=None, track=None, artist_mbid=None, recording_mbid=None):
-        """Returns (seed_artist_name, artist_mbid, seed_track_or_None)."""
-        if recording_mbid:
-            meta = self.lb.recording_metadata([recording_mbid]).get(recording_mbid) or {}
-            ac = (meta.get("artist") or {}).get("artists") or [{}]
-            title = (meta.get("recording") or {}).get("name")
-            name, amb = ac[0].get("name"), ac[0].get("artist_mbid")
-            return name, amb, Track(name, title, amb, recording_mbid)
-        if track:
-            a, _, t = track.partition(" - ")
+    # ---------- seed ----------
+    def resolve(self, artist=None, track=None, artist_mbid=None, recording_mbid=None) -> tuple[Artist, Track | None]:
+        r = self.p.resolver
+        if recording_mbid or track:
+            if recording_mbid:
+                t = r.recording_by_mbid(recording_mbid)
+            else:
+                a, _, title = track.partition(" - ")
+                if not title:
+                    raise ValueError("--track must look like 'Artist - Title'")
+                t = r.find_recording(a.strip(), title.strip())
             if not t:
-                raise ValueError("--track must look like 'Artist - Title'")
-            r = self.mb.find_recording(a.strip(), t.strip())
-            if not r:
-                raise ValueError(f"track not found on MusicBrainz: {track}")
-            return r["artist"], r["artist_mbid"], Track(r["artist"], r["title"], r["artist_mbid"], r["recording_mbid"])
-        if artist_mbid:
-            name = self.mb.artist_name(artist_mbid)
-            if not name:
-                raise ValueError(f"could not resolve artist {artist_mbid} on MusicBrainz (busy? retry)")
-            return name, artist_mbid, None
-        if artist:
-            found = self.mb.find_artist(artist)
-            if not found:
-                raise ValueError(f"artist not found on MusicBrainz: {artist}")
-            return found[1], found[0], None
-        raise ValueError("need a seed")
+                raise ValueError(f"track not found: {recording_mbid or track}")
+            return t.artist, t
+        a = r.artist_by_mbid(artist_mbid) if artist_mbid else r.find_artist(artist) if artist else None
+        if not a:
+            raise ValueError(f"artist not found: {artist_mbid or artist}")
+        return a, None
 
     # ---------- graph ----------
-    def build_graph(self, name, mbid, p: Params, cap: int = 160) -> Graph:
-        g = Graph()
-        seed = g.add(name, 0, 1.0, "seed", mbid=mbid)
-        self._dz_lookup(seed)
-        frontier = [norm(name)]
-        fanout = {1: 14, 2: 8, 3: 6}
-        budget = {h: cap * (h / sum(range(1, p.max_hops + 1))) for h in range(1, p.max_hops + 1)}
+    def build_graph(self, seed: Artist, p: Params) -> Graph:
+        a, cap = self.a, self.a.graph_cap
+        g = Graph(a.agreement_bonus)
+        g.add(seed, 0, 1.0, "seed")
+        frontier = [g.nodes[seed.key]]
+        budget = {h: cap * h / sum(range(1, p.max_hops + 1)) for h in range(1, p.max_hops + 1)}
         for hop in range(1, p.max_hops + 1):
-            nxt = []
-            hop_start = len(g.nodes)
-            for key in frontier:
-                if len(g.nodes) - hop_start >= budget[hop]:
+            new: list[Node] = []
+            start = len(g.nodes)
+            for src in frontier:
+                if len(g.nodes) - start >= budget[hop]:
                     break
-                src = g.nodes[key]
-                k = fanout[hop]
-                if src.mbid:
-                    for m, nm, s in self.lb.similar_artists(src.mbid, limit=k):
-                        w = src.affinity * EDGE_WEIGHT["lb"] * (0.5 + 0.5 * s)
-                        nxt.append(g.add(nm, hop, w, "lb", mbid=m, parent=src.name))
-                    if hop == 1:  # MB relations only matter right next to the seed (members, side projects)
-                        for m, nm in self.mb.related_artists(src.mbid)[:6]:
-                            nxt.append(g.add(nm, hop, src.affinity * EDGE_WEIGHT["mb"], "mb", mbid=m, parent=src.name))
-                if src.deezer_id is None and hop > 1:
-                    self._dz_lookup(src)
-                if src.deezer_id:
-                    rel = self.dz.related(src.deezer_id, limit=k)
-                    for i, (did, nm, fans) in enumerate(rel):
-                        w = 1 - 0.5 * i / max(1, len(rel))
-                        nxt.append(g.add(nm, hop, src.affinity * EDGE_WEIGHT["deezer"] * w, "deezer",
-                                         deezer_id=did, fans=fans, parent=src.name))
-            # expand the strongest new nodes next
-            seen, frontier = set(), []
-            for n in sorted(nxt, key=lambda n: -n.affinity):
-                kk = norm(n.name)
-                if n.hop == hop and kk not in seen:
-                    seen.add(kk)
-                    frontier.append(kk)
-            if hop == 1 and len(g.nodes) < SPARSE_GRAPH and mbid:
-                nxt += self._tag_neighbours(g, name, mbid, p)
-                frontier += [norm(n.name) for n in nxt if norm(n.name) not in frontier and n.hop == 1]
-            frontier = frontier[: max(4, 16 // hop)]
-        self.log(f"graph: {len(g.nodes)} artists, hops<= {p.max_hops}")
+                for prov in self.p.similar:
+                    if hop <= prov.max_hop:
+                        k = a.fanout.get(hop, a.fanout[max(a.fanout)])
+                        new += [self._link(g, src, e, hop) for e in prov.neighbours(src.artist, k)]
+            if hop == 1 and len(g.nodes) - 1 < a.sparse_graph:
+                new += self._tag_neighbours(g, frontier[0], p)
+            ranked = sorted({n.artist.key: n for n in new if n.hop == hop}.values(), key=lambda n: -n.affinity)
+            frontier = ranked[: max(a.frontier_min, a.frontier_base // hop)]
+        self.log(f"graph: {len(g.nodes)} artists, hops <= {p.max_hops}")
         return g
 
-    def _tag_neighbours(self, g: Graph, seed_name: str, mbid: str, p: Params) -> list[Node]:
-        """Sparse seed: borrow neighbours from artists sharing its MB tags, via troi's LB tag radio."""
-        tags = self.mb.tags(mbid)
+    def _link(self, g: Graph, src: Node, e: Edge, hop: int) -> Node:
+        w = self.a.source_weights.get(e.source, 0.7)
+        return g.add(e.target, hop, src.affinity * w * e.weight, e.source, src)
+
+    def _tag_neighbours(self, g: Graph, seed: Node, p: Params) -> list[Node]:
+        """Sparse seed: borrow neighbours from artists sharing its tags (tag radio)."""
+        if not (self.p.tagger and self.p.tag_radio):
+            return []
+        tags = self.p.tagger.tags(seed.artist)
         if not tags:
             return []
-        lo, hi = self._troi_window(p)
-        rec_mbids = self.lb.radio_tags(tags, lo, hi, 60)
-        meta = self.lb.recording_metadata(rec_mbids) if rec_mbids else {}
-        out = []
-        for m in meta.values():
-            for a in ((m.get("artist") or {}).get("artists") or [])[:1]:
-                if a.get("artist_mbid") and a["artist_mbid"] != mbid:
-                    out.append(g.add(a["name"], 1, EDGE_WEIGHT["tag"], "tag", mbid=a["artist_mbid"], parent=seed_name))
-        self.log(f"sparse seed: added {len(out)} tag neighbours from {tags}")
-        return out
+        found = self.p.tag_radio.artists_for_tags(tags, p.pop, self.a.tag_radio_recordings)
+        artists = [a for a in found if a.key != seed.artist.key]
+        self.log(f"sparse seed: {len(artists)} tag neighbours from {tags}")
+        w = self.a.source_weights["tag"]
+        return [g.add(a, 1, w, "tag", seed) for a in artists[: self.a.tag_neighbours]]
 
-    def artist_weight(self, n: Node, p: Params, known: dict[str, int]) -> float:
-        w = n.affinity * hop_fit(n.hop, p) * artist_pop_fit(n.popularity, p, self.seed_pop)
-        listens = known.get(n.mbid or "", 0) or known.get("n:" + norm(n.name), 0)
+    def artist_weight(self, n: Node, p: Params) -> float:
+        w = n.affinity * hop_fit(n.hop, p) * artist_pop_fit(n.artist.popularity, p, self.seed_pop)
+        listens = self.history().plays(n.artist)
         if listens:
-            fam = min(1.0, math.log1p(listens) / math.log(200))
-            w *= 1 - 0.9 * p.explore * fam
+            fam = min(1.0, math.log1p(listens) / math.log(self.a.familiarity_saturation))
+            w *= 1 - self.a.familiarity_strength * p.explore * fam
         return w
 
     # ---------- candidates ----------
-    def candidates(self, g: Graph, p: Params, seed_name: str, seed_mbid: str, known) -> list[tuple[Track, Node]]:
-        # pass 1: graph-only weight picks a shortlist; fetching their LB top tracks also tells us how
-        # popular each artist is, which pass 2 folds in (this is what pushes high explore off the mainstream)
-        shortlist = sorted(g.nodes.values(), key=lambda n: -self.artist_weight(n, p, known))[:max(40, p.n)]
-        lb_tracks = {}
-        for n in shortlist:
-            if not n.mbid and n.via <= {"deezer", "deezer-radio"}:
-                found = self.mb.find_artist(n.name)
-                n.mbid = found[0] if found and norm(found[1]) == norm(n.name) else None
-            if n.mbid:
-                lb_tracks[n.name] = self._lb_tracks(n)
-        nodes = sorted(shortlist, key=lambda n: -self.artist_weight(n, p, known))[:max(18, p.n // 2)]
-        out: list[tuple[Track, Node]] = []
-        for n in nodes:
-            out += [(t, n) for t in lb_tracks.get(n.name, [])]
-            if n.deezer_id is None:
-                self._dz_lookup(n)
-            if n.deezer_id:
-                out += [(t, n) for t in self.dz.top(n.deezer_id, limit=40)]
-        # Deezer radio around the seed and the closest neighbours: brings in artists outside the graph
-        radio_from = [g.nodes[norm(seed_name)]] + [n for n in nodes if n.hop == 1][:3]
-        for n in radio_from:
-            if n.deezer_id:
-                for t in self.dz.radio(n.deezer_id):
-                    rn = self._node_for(g, t.artist, n.hop + 1, n.affinity * 0.7, "deezer-radio", parent=n.name)
-                    if rn.popularity is None:
-                        self._dz_lookup(rn)
-                    out.append((t, rn))
-        # troi LB-radio: seed + similar artists in the mode matching the exploration level
-        lo, hi = self._troi_window(p)
-        radio = self.lb.radio_artist(seed_mbid, p.troi_mode, lo, hi, 8)
-        mbids = [r.mbid for recs in radio.values() for r in recs]
-        meta = self.lb.recording_metadata(mbids) if mbids else {}
-        for amb, recs in radio.items():
-            for r in recs:
-                m = meta.get(r.mbid) or {}
-                title = (m.get("recording") or {}).get("name")
-                if not title:
-                    continue
-                name = r.artist_credit.name
-                hop = 0 if amb == seed_mbid else 1
-                node = self._node_for(g, name, hop, 0.8, "troi", mbid=amb)
-                t = Track(name, title, amb, r.mbid, popularity=1 - (lo + hi) / 200, sources={"troi"})
-                node.parent = node.parent or (seed_name if hop else None)
-                out.append((t, node))
+    def _top_tracks(self, artist: Artist) -> list[Track]:
+        out = []
+        for prov in self.p.tracks:
+            tracks = prov.top_tracks(artist, self.a.top_tracks_limit)
+            out += [t for t in tracks if not self.junk.search(t.title)]
         return out
 
-    def _dz_lookup(self, n: Node):
-        found = self._dz_match(n)
-        n.deezer_id = found[0] if found else 0  # 0 = looked up, not on Deezer / ambiguous
-        if found and n.dz_pop is None:
-            n.dz_pop = dz_pop(found[1])
-
-    def _dz_match(self, n: Node) -> tuple[int, int] | None:
-        """Pick the Deezer artist that is really this node. Names collide (US soul 'Bilal' vs Algerian
-        rai 'Bilal'), so when we know the MBID, require shared song titles with its LB top recordings."""
-        cands = self.dz.find_artists(n.name)
-        if not cands or not n.mbid:
-            return cands[0] if cands else None
-        lb_titles = {norm(r["recording_name"]) for r in self.lb.top_recordings(n.mbid)[:200]}
-        if not lb_titles:  # obscure artists often have no LB listens; MB still knows their songs
-            lb_titles = self.mb.recording_titles(n.mbid)
-        if not lb_titles:
-            return cands[0] if len(cands) == 1 else None
-        for did, fans in cands:
-            dz_titles = {norm(t.title) for t in self.dz.top(did, limit=40)}
-            if len(dz_titles & lb_titles) >= 2:
-                return did, fans
-        return None
-
-    def _troi_window(self, p: Params) -> tuple[int, int]:
-        """troi popularity percentiles: 0 = an artist's most-played recordings, 100 = least."""
-        centre = round(100 * (1 - p.pop))
-        lo = min(max(0, centre - 17), 66)
-        return lo, lo + 34
-
-    def _node_for(self, g: Graph, name, hop, affinity, src, mbid=None, parent=None) -> Node:
-        return g.nodes.get(norm(name)) or g.add(name, hop, affinity, src, mbid=mbid, parent=parent)
-
-    @staticmethod
-    def path(g: Graph, n: Node) -> list[str]:
-        out = [n.name]
-        while n.parent and len(out) < 6:
-            n = g.nodes[norm(n.parent)]
-            out.append(n.name)
-        return out[::-1]
-
-    def _lb_tracks(self, n: Node) -> list[Track]:
-        rows = self.lb.top_recordings(n.mbid)
-        if not rows:
-            return []
-        n.lb_pop = min(1.0, math.log10(1 + (rows[0]["total_user_count"] or 0)) / 5.5)
-        floor = max(5, (rows[0]["total_user_count"] or 0) * 0.002)
-        rows = [r for r in rows if (r["total_user_count"] or 0) >= floor and not JUNK_TITLE.search(r["recording_name"])]
-        seen, uniq = set(), []
-        for r in rows:  # LB lists the same song once per recording; keep the most-played
-            k = norm(r["recording_name"])
-            if k not in seen:
-                seen.add(k)
-                uniq.append(r)
-        rows = uniq[:120]
-        out = []
-        for i, r in enumerate(rows):
-            out.append(Track(r["artist_name"], r["recording_name"], n.mbid, r["recording_mbid"],
-                             popularity=1 - i / max(1, len(rows) - 1), sources={"lb"}))
+    def candidates(self, g: Graph, seed: Node, p: Params) -> list[tuple[Track, Node]]:
+        # pass 1: graph-only weight picks a shortlist; fetching their catalogues also fills in artist
+        # popularity, which pass 2 folds in (this is what keeps deep exploration off the mainstream)
+        shortlist = sorted(g.nodes.values(), key=lambda n: -self.artist_weight(n, p))[:max(self.a.shortlist_min, p.n)]
+        catalogue = {n.artist.key: self._top_tracks(n.artist) for n in shortlist}
+        nodes = sorted(shortlist, key=lambda n: -self.artist_weight(n, p))[:max(self.a.candidate_artists_min, p.n // 2)]
+        out = [(t, n) for n in nodes for t in catalogue[n.artist.key]]
+        # radio around the seed and its closest neighbours brings in artists outside the graph
+        for n in [seed] + [n for n in nodes if n.hop == 1][: self.a.radio_neighbours]:
+            for prov in self.p.radios:
+                for t in prov.radio(n.artist, p.pop, p.radio_mode):
+                    hop = 0 if t.artist.key == seed.artist.key else n.hop + 1
+                    rn = g.node_for(t.artist, hop, n.affinity * self.a.source_weights["radio"], "radio", n)
+                    t.artist = rn.artist
+                    out.append((t, rn))
         return out
 
     # ---------- ranking ----------
-    def generate(self, p: Params, **seed) -> dict:
+    def generate(self, p: Params, **seed_args) -> dict:
         rng = random.Random(p.seed)
-        self.seed_pop = None
-        name, mbid, seed_track = self.resolve(**seed)
-        self.log(f"seed: {name} ({mbid})" + (f" / track {seed_track.title}" if seed_track else ""))
-        known, heard = self.history()
-        g = self.build_graph(name, mbid, p)
-        seed_node = g.nodes[norm(name)]
-        if mbid and seed_node.lb_pop is None:
-            self._lb_tracks(seed_node)  # sets lb_pop
-        self.seed_pop = seed_node.popularity
-        cands = self.candidates(g, p, name, mbid, known)
+        seed_artist, seed_track = self.resolve(**seed_args)
+        self.log(f"seed: {seed_artist.name} ({seed_artist.mbid})" + (f" / {seed_track.title}" if seed_track else ""))
+        history = self.history()
+        g = self.build_graph(seed_artist, p)
+        seed = g.nodes[seed_artist.key]
+        self._top_tracks(seed.artist)  # fills seed popularity before anything is weighted
+        self.seed_pop = seed.artist.popularity
+        cands = self.candidates(g, seed, p)
 
         merged: dict[str, tuple[Track, Node]] = {}
         for t, n in cands:
-            if JUNK_TITLE.search(t.title):
+            if self.junk.search(t.title):
                 continue
-            key = norm(t.artist) + "|" + norm(re.sub(r"\s*[\(\[].*", "", t.title))
-            if key in merged:
-                old = merged[key][0]
+            if t.key in merged:
+                old = merged[t.key][0]
                 old.sources |= t.sources
                 old.popularity = max(old.popularity, t.popularity)
                 old.recording_mbid = old.recording_mbid or t.recording_mbid
                 old.deezer_id = old.deezer_id or t.deezer_id
             else:
-                merged[key] = (t, n)
-
+                merged[t.key] = (t, n)
         if seed_track:
-            merged.pop(norm(seed_track.artist) + "|" + norm(seed_track.title), None)
+            merged.pop(seed_track.key, None)
 
         scored = []
-        for key, (t, n) in merged.items():
-            if key in heard:
-                if p.explore >= 0.3:
+        for t, n in merged.values():
+            pen = 1.0
+            if history.heard(t):
+                if p.explore >= self.a.heard_skip_explore:
                     continue
-                pen = 0.6
-            else:
-                pen = 1.0
-            s = self.artist_weight(n, p, known) * pop_fit(t.popularity, p) * pen
-            s *= 1 + 0.2 * (len(t.sources) - 1)
-            s *= 0.85 + 0.3 * rng.random()  # keep repeated runs from being identical
+                pen = self.a.heard_penalty
+            s = self.artist_weight(n, p) * pop_fit(t.popularity, p) * pen
+            s *= 1 + self.a.multi_source_bonus * (len(t.sources) - 1)
+            s *= 1 - self.a.jitter / 2 + self.a.jitter * rng.random()  # keep repeated runs from being identical
             scored.append((s, t, n))
         scored.sort(key=lambda x: -x[0])
 
-        per_artist: dict[str, int] = defaultdict(int)
-        per_source: dict[str, int] = defaultdict(int)
-        max_source = math.ceil(p.n * MAX_SOURCE_SHARE)
-        picked = []
-        for s, t, n in scored:
-            a = norm(n.name)  # per graph node: Deezer /top includes tracks credited to collaborators
-            only = next(iter(t.sources)) if len(t.sources) == 1 else None
-            if per_artist[a] >= p.per_artist or (only and per_source[only] >= max_source):
-                continue
-            per_artist[a] += 1
-            if only:
-                per_source[only] += 1
-            picked.append({
-                "artist": t.artist, "title": t.title, "score": round(s, 4), "hop": n.hop,
-                "popularity": round(t.popularity, 2), "sources": sorted(t.sources),
-                "recording_mbid": t.recording_mbid, "deezer_id": t.deezer_id,
-                "path": self.path(g, n), "via": sorted(n.via),
-                "known_artist": bool(known.get(n.mbid or "") or known.get("n:" + norm(t.artist))),
-            })
-            if len(picked) >= p.n:
-                break
-        # gentle shuffle within bands so the playlist doesn't read as a strict ranking
-        bands = [picked[i:i + 10] for i in range(0, len(picked), 10)]
-        for b in bands:
+        picked = self._select(scored, p)
+        band = self.a.shuffle_band
+        bands = [picked[i:i + band] for i in range(0, len(picked), band)]
+        for b in bands:  # gentle shuffle so the list doesn't read as a strict ranking
             rng.shuffle(b)
         return {
-            "seed": {"artist": name, "artist_mbid": mbid,
-                     "track": seed_track.title if seed_track else None},
-            "explore": p.explore, "popularity": p.popularity, "mode": p.troi_mode, "graph_size": len(g.nodes),
-            "candidates": len(merged), "tracks": [t for b in bands for t in b],
+            "seed": {"artist": seed_artist.name, "artist_mbid": seed_artist.mbid,
+                     "track": seed_track.title if seed_track else None, "popularity": self.seed_pop},
+            "explore": p.explore, "popularity": p.popularity, "mode": p.radio_mode, "graph_size": len(g.nodes),
+            "candidates": len(merged),
+            "tracks": [self._row(s, t, n, g, history) for b in bands for (s, t, n) in b],
+        }
+
+    def _select(self, scored, p: Params):
+        """Greedy by score with a per-artist cap. A per-source cap keeps one source from dominating,
+        but only as a preference: if it leaves the list short, a second pass fills it ignoring that cap."""
+        per_artist: dict[str, int] = defaultdict(int)
+        per_source: dict[str, int] = defaultdict(int)
+        max_source = math.ceil(p.n * self.a.max_source_share)
+        picked, taken = [], set()
+        for enforce_source_cap in (True, False):
+            for i, (s, t, n) in enumerate(scored):
+                if len(picked) >= p.n:
+                    break
+                only = next(iter(t.sources)) if len(t.sources) == 1 else None
+                if i in taken or per_artist[n.artist.key] >= p.per_artist:
+                    continue
+                if enforce_source_cap and only and per_source[only] >= max_source:
+                    continue
+                taken.add(i)
+                per_artist[n.artist.key] += 1
+                if only:
+                    per_source[only] += 1
+                picked.append((s, t, n))
+        picked.sort(key=lambda x: -x[0])
+        return picked
+
+    @staticmethod
+    def _row(s: float, t: Track, n: Node, g: Graph, history: History) -> dict:
+        return {
+            "artist": t.artist.name, "title": t.title, "score": round(s, 4), "hop": n.hop,
+            "popularity": round(t.popularity, 2), "artist_popularity": n.artist.popularity,
+            "sources": sorted(t.sources), "recording_mbid": t.recording_mbid, "deezer_id": t.deezer_id,
+            "path": g.path(n), "via": sorted(n.via), "known_artist": bool(history.plays(n.artist)),
         }

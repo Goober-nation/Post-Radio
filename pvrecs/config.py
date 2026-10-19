@@ -1,0 +1,144 @@
+"""All tunables in one place. `config.example.yaml` mirrors these dataclasses; a YAML file only
+needs the keys it changes. Unknown keys are an error (catches typos)."""
+import os
+from dataclasses import dataclass, field, fields, is_dataclass, replace
+from pathlib import Path
+
+import yaml
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+# ---------------------------------------------------------------- user-facing
+@dataclass
+class Defaults:
+    explore: float = 0.5  # 0 = seed + closest neighbours, 1 = ~3 hops out
+    popularity: float | None = None  # 0 = deep cuts by small artists, 1 = hits; null = follow explore
+    n: int = 50  # playlist length
+    per_artist: int = 2  # max tracks per artist
+
+
+@dataclass
+class Storage:
+    save_dir: str = "~/.local/share/pvrecs/playlists"  # liked playlists are written here as JSON
+    result_ttl_s: int = 3600  # unsaved results are kept in memory this long...
+    result_cache_size: int = 50  # ...up to this many
+    http_cache: str = ".cache/http.sqlite"  # relative paths resolve against the repo root
+    http_ttl_s: int = 7 * 86400
+
+
+@dataclass
+class Sources:
+    use_lb_token: bool = True  # adds LB popularity as a 2nd track source when $LISTENBRAINZ_TOKEN is set
+    history: str = "lb"  # lb | file | none
+    lb_user: str | None = None  # null = $LISTENBRAINZ_USERNAME
+    history_file: str | None = None  # .jsonl/.csv plays (artist, title, [timestamp, artist_mbid, recording_mbid])
+
+
+@dataclass
+class Server:
+    host: str = "127.0.0.1"
+    port: int = 8765
+
+
+# ---------------------------------------------------------------- advanced (algorithm constants)
+@dataclass
+class Advanced:
+    # explore -> graph shape
+    hop_span: float = 3.0  # target hop = hop_span * explore
+    max_extra_hops: int = 2  # max hops = 1 + round(max_extra_hops * explore)
+    radio_mode_thresholds: tuple[float, float] = (0.34, 0.67)  # troi easy | medium | hard
+    # explore/popularity -> targets
+    pop_slope: float = 0.85  # track popularity target = 1 - pop_slope * explore (no slider)
+    ceiling_base: float = 0.95  # artist popularity ceiling = base - slope * explore (no slider)
+    ceiling_slope: float = 0.6
+    slider_ceiling_base: float = 0.35  # with slider: ceiling = base + slope * popularity
+    slider_ceiling_slope: float = 0.6
+    seed_pop_margin: float = 0.2  # no slider: ceiling never exceeds seed popularity + margin
+    # fit curve widths (gaussian denominators)
+    hop_width: float = 1.2
+    pop_width: float = 0.12
+    artist_pop_width: float = 0.03
+    unknown_artist_pop_fit: float = 0.7
+    # graph
+    source_weights: dict[str, float] = field(default_factory=lambda: {
+        "lb": 1.0, "deezer": 0.85, "mb": 0.6, "tag": 0.5, "radio": 0.5})
+    agreement_bonus: float = 1.15
+    graph_cap: int = 160
+    fanout: dict[int, int] = field(default_factory=lambda: {1: 14, 2: 8, 3: 6})
+    frontier_base: int = 16  # frontier size at hop h = max(frontier_min, frontier_base // h)
+    frontier_min: int = 4
+    sparse_graph: int = 8  # fewer hop-1 artists -> tag fallback
+    tag_neighbours: int = 20
+    tag_radio_recordings: int = 60
+    # candidates
+    shortlist_min: int = 40
+    candidate_artists_min: int = 18
+    radio_neighbours: int = 3  # radio is pulled for the seed + this many hop-1 artists
+    top_tracks_limit: int = 100
+    junk_title_pattern: str = (r"^\[|\b(live|demo|remix|edit|instrumental|acoustic version|karaoke|session"
+                               r"|rehearsal|bootleg|version|take \d+|dub|mix|unplugged|débranché|phase corrected)\b"
+                               r"|\(\d{4}|\d{4}[‐-]\d\d")
+    # ranking
+    familiarity_strength: float = 0.9  # known artist weight *= 1 - strength * explore * familiarity
+    familiarity_saturation: int = 200  # plays at which an artist counts as fully familiar
+    heard_skip_explore: float = 0.3  # at/above this explore, already-played tracks are dropped
+    heard_penalty: float = 0.6  # below it they're multiplied by this
+    multi_source_bonus: float = 0.2
+    jitter: float = 0.3
+    shuffle_band: int = 10
+    max_source_share: float = 0.5
+    # provider scales
+    deezer_fans_full_scale: float = 6.9  # log10 fans of a superstar
+    deezer_rank_full_scale: int = 900_000
+    lb_listeners_full_scale: float = 5.5  # log10 LB listeners of a superstar
+    lb_min_listener_share: float = 0.002  # drop recordings below this share of the artist's top track
+    troi_window_width: int = 34
+    # rate limits
+    min_interval_s: dict[str, float] = field(default_factory=lambda: {
+        "musicbrainz.org": 1.1, "api.deezer.com": 0.12, "default": 0.05})
+    max_attempts: dict[str, int] = field(default_factory=lambda: {"musicbrainz.org": 8, "default": 4})
+    backoff_cap_s: float = 60.0
+
+
+@dataclass
+class Config:
+    defaults: Defaults = field(default_factory=Defaults)
+    storage: Storage = field(default_factory=Storage)
+    sources: Sources = field(default_factory=Sources)
+    server: Server = field(default_factory=Server)
+    advanced: Advanced = field(default_factory=Advanced)
+
+    def path(self, p: str) -> Path:
+        q = Path(os.path.expanduser(p))
+        return q if q.is_absolute() else ROOT / q
+
+
+def _merge(obj, data: dict, where: str):
+    if not isinstance(data, dict):
+        raise ValueError(f"config: '{where}' must be a mapping")
+    known = {f.name: f for f in fields(obj)}
+    updates = {}
+    for k, v in data.items():
+        if k not in known:
+            raise ValueError(f"config: unknown key '{where}.{k}'")
+        cur = getattr(obj, k)
+        if is_dataclass(cur):
+            v = _merge(cur, v, f"{where}.{k}")
+        elif isinstance(cur, dict) and isinstance(v, dict):
+            v = {**cur, **v}  # partial override of e.g. source_weights
+        elif isinstance(cur, tuple):
+            v = tuple(v)
+        updates[k] = v
+    return replace(obj, **updates)
+
+
+def load(path: str | Path | None = None) -> Config:
+    """Explicit path > $PVRECS_CONFIG > ./config.yaml (repo root) > built-in defaults."""
+    p = path or os.environ.get("PVRECS_CONFIG") or (ROOT / "config.yaml")
+    p = Path(p)
+    if not p.exists():
+        if path:
+            raise FileNotFoundError(p)
+        return Config()
+    return _merge(Config(), yaml.safe_load(p.read_text()) or {}, "config")

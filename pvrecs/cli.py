@@ -2,11 +2,13 @@ import argparse
 import json
 import os
 import sys
+from dataclasses import replace
 from pathlib import Path
 
-from .engine import Params, Radio
-from .http import Http
-from .sources import Deezer, ListenBrainz, MusicBrainz
+from . import config as config_mod
+from .api import Recommender
+from .providers import NoHistory
+from .providers.history import FileHistory
 
 
 def load_env(path: Path):
@@ -18,42 +20,104 @@ def load_env(path: Path):
             os.environ.setdefault(k.strip(), v.strip().strip("'\""))
 
 
-def main(argv=None):
-    ap = argparse.ArgumentParser(prog="pvrecs", description="Tunable exploration radio")
-    g = ap.add_mutually_exclusive_group(required=True)
-    g.add_argument("--artist", help="seed artist name")
-    g.add_argument("--track", help="seed track as 'Artist - Title'")
+def _unit(v: str) -> float:
+    f = float(v)
+    if not 0 <= f <= 1:
+        raise argparse.ArgumentTypeError("must be in [0, 1]")
+    return f
+
+
+def parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(prog="pvrecs", description="Tunable exploration radio + LB created-for playlists")
+    ap.add_argument("--config", help="YAML config (default: $PVRECS_CONFIG or ./config.yaml)")
+    ap.add_argument("--no-token", action="store_true", help="ignore $LISTENBRAINZ_TOKEN (fully tokenless)")
+    ap.add_argument("--offline", action="store_true", help="HTTP cache only, no network")
+    ap.add_argument("--json", action="store_true", help="print full JSON")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    r = sub.add_parser("radio", help="generate an exploration radio playlist")
+    g = r.add_mutually_exclusive_group(required=True)
+    g.add_argument("--artist")
+    g.add_argument("--track", help="'Artist - Title'")
     g.add_argument("--artist-mbid")
     g.add_argument("--recording-mbid")
-    ap.add_argument("-e", "--explore", type=float, default=0.5, help="0 = close & popular, 1 = far & deep cuts")
-    ap.add_argument("-p", "--popularity", type=float,
-                    help="0 = deep cuts by obscure artists, 1 = hits; default follows --explore")
-    ap.add_argument("-n", type=int, default=50)
-    ap.add_argument("--per-artist", type=int, default=2)
-    ap.add_argument("--rng-seed", type=int)
-    ap.add_argument("--json", action="store_true", help="print full JSON instead of a table")
-    ap.add_argument("--offline", action="store_true", help="cache only, no network")
-    a = ap.parse_args(argv)
-    if not 0 <= a.explore <= 1:
-        ap.error("--explore must be in [0, 1]")
-    if a.popularity is not None and not 0 <= a.popularity <= 1:
-        ap.error("--popularity must be in [0, 1]")
+    r.add_argument("-e", "--explore", type=_unit, help="0 = close, 1 = ~3 hops out")
+    r.add_argument("-p", "--popularity", type=_unit, help="0 = deep cuts/small artists, 1 = hits")
+    r.add_argument("--auto-popularity", action="store_true", help="ignore configured popularity; follow explore")
+    r.add_argument("-n", type=int)
+    r.add_argument("--per-artist", type=int)
+    r.add_argument("--rng-seed", type=int)
+    h = r.add_mutually_exclusive_group()
+    h.add_argument("--lb-user", help="history from this LB user")
+    h.add_argument("--history-file", help="history from a .jsonl/.csv plays file")
+    h.add_argument("--no-history", action="store_true")
+    r.add_argument("--save", nargs="?", const="", metavar="NAME", help="save the result (default name if omitted)")
 
-    load_env(Path(__file__).resolve().parent.parent / ".env")
-    http = Http(offline=a.offline)
+    d = sub.add_parser("deep-cuts", help="LB Weekly Exploration (or Jams), both weeks")
+    d.add_argument("--user", help="LB user (default: config / $LISTENBRAINZ_USERNAME)")
+    d.add_argument("--kind", choices=["exploration", "jams"], default="exploration")
+    d.add_argument("--save", nargs="?", const="", metavar="NAME")
+
+    s = sub.add_parser("saved", help="list saved playlists, or print one")
+    s.add_argument("name", nargs="?")
+
+    sv = sub.add_parser("serve", help="run the HTTP API")
+    sv.add_argument("--host")
+    sv.add_argument("--port", type=int)
+    return ap
+
+
+def main(argv=None):
+    a = parser().parse_args(argv)
+    load_env(config_mod.ROOT / ".env")
+    cfg = config_mod.load(a.config)
     log = (lambda *_: None) if a.json else (lambda m: print(f"# {m}", file=sys.stderr))
-    radio = Radio(ListenBrainz(http, os.environ.get("LISTENBRAINZ_TOKEN"), os.environ.get("LISTENBRAINZ_USERNAME")),
-                  MusicBrainz(http), Deezer(http), log=log)
-    res = radio.generate(Params(a.explore, a.n, a.per_artist, a.rng_seed, a.popularity), artist=a.artist, track=a.track,
-                         artist_mbid=a.artist_mbid, recording_mbid=a.recording_mbid)
+    token = "" if a.no_token else None  # "" disables, None = env
+
+    history = None
+    if a.cmd == "radio":
+        if a.no_history:
+            history = NoHistory()
+        elif a.history_file:
+            history = FileHistory(a.history_file)
+        elif a.lb_user:
+            cfg = replace(cfg, sources=replace(cfg.sources, history="lb", lb_user=a.lb_user))
+    rec = Recommender(cfg, token=token, history=history, offline=a.offline, log=log)
+
+    if a.cmd == "serve":
+        import uvicorn
+
+        from .server import create_app
+        uvicorn.run(create_app(rec), host=a.host or cfg.server.host, port=a.port or cfg.server.port)
+        return
+    if a.cmd == "saved":
+        out = rec.load_saved(a.name) if a.name else rec.list_saved()
+        print(json.dumps(out, indent=2, ensure_ascii=False))
+        return
+
+    if a.cmd == "radio":
+        res = rec.generate(artist=a.artist, track=a.track, artist_mbid=a.artist_mbid, recording_mbid=a.recording_mbid,
+                           explore=a.explore, popularity=a.popularity, n=a.n, per_artist=a.per_artist,
+                           rng_seed=a.rng_seed, auto_popularity=a.auto_popularity)
+    else:
+        res = rec.deep_cuts(a.user, a.kind)
+
     if a.json:
         print(json.dumps(res, indent=2, ensure_ascii=False))
-        return
-    log(f"{len(res['tracks'])} tracks from {res['candidates']} candidates, {http.calls} network calls")
-    for i, t in enumerate(res["tracks"], 1):
-        mark = "*" if t["known_artist"] else " "
-        srcs = ",".join(t["sources"])
-        print(f"{i:>3} h{t['hop']} p{t['popularity']:.2f}{mark} {t['artist']} — {t['title']}  [{srcs}]")
+    elif a.cmd == "radio":
+        log(f"{len(res['tracks'])} tracks from {res['candidates']} candidates, "
+            f"{rec.http.calls} network calls, {rec.http.failures} failed")
+        for i, t in enumerate(res["tracks"], 1):
+            mark = "*" if t["known_artist"] else " "
+            print(f"{i:>3} h{t['hop']} p{t['popularity']:.2f}{mark} {t['artist']} — {t['title']}  "
+                  f"[{','.join(t['sources'])}]")
+    else:
+        for w in res["weeks"]:
+            print(f"== {w['title']} ({len(w['tracks'])} tracks) {w['url']}")
+            for i, t in enumerate(w["tracks"], 1):
+                print(f"{i:>3} {t['artist']} — {t['title']}")
+    if a.save is not None:
+        log(f"saved: {rec.save(res['result_id'], a.save or None)}")
 
 
 if __name__ == "__main__":

@@ -1,45 +1,68 @@
 # postvinyl-recs
 
-Tunable "exploration radio", like ListenBrainz Deep Cuts but seeded from a track or artist you pick,
-with one knob for how far it wanders.
+Tunable "exploration radio", like ListenBrainz's Weekly Exploration but seeded from a track or artist you pick,
+with two knobs: how far it wanders (`explore`) and how mainstream it gets (`popularity`). It also pulls LB's
+own Weekly Exploration/Jams playlists. **No API key needed**; an LB token only adds a second track source.
+
+## Use
 
 ```
-pvrecs --artist "Radiohead" -e 0.7 -n 50
-pvrecs --track "Tyler, The Creator - See You Again" -e 0.4
-pvrecs --artist-mbid <mbid> | --recording-mbid <mbid>   [--json] [--rng-seed N] [--per-artist 2]
+pvrecs radio --artist "Radiohead" -e 0.7            # explore 0..1
+pvrecs radio --track "Radiohead - Karma Police" -e 0.4 -p 0.1   # popularity 0 = deep cuts, 1 = hits
+pvrecs radio --artist-mbid <mbid> --save "late night"           # keep it
+pvrecs deep-cuts [--user U] [--kind exploration|jams] [--save]  # LB Weekly Exploration, both weeks
+pvrecs saved [name]
+pvrecs serve                                          # HTTP API on 127.0.0.1:8765
 ```
+Global flags: `--config path.yaml`, `--no-token`, `--json`, `--offline`. Radio history: `--lb-user U`,
+`--history-file plays.jsonl|csv`, `--no-history`.
 
-## How it works
+### From Python (how Post-Vinyl uses it)
 
-1. **Seed**: resolved via MusicBrainz (names), or LB metadata (recording MBID). A track seed currently
-   seeds from its artist and drops the track itself from the output.
-2. **Graph**: BFS out to `1 + round(2·explore)` hops, merging edges from
-   LB Labs similar-artists, Deezer related-artists and MusicBrainz relations (members/side projects, hop 1).
-   Nodes are merged by normalised name. An edge seen from more than one source gets a bonus.
-   Deezer artists are matched to MBID nodes only when their top tracks share titles with LB's top
-   recordings, which stops name collisions (e.g. two different artists both named "Bilal").
-3. **Candidates**: LB popularity top-recordings per artist (junk like live/demo/remix filtered, the
-   rank inside the artist used as track popularity), Deezer top tracks, Deezer artist radio around the
-   seed and its closest neighbours, and **troi**'s LB-radio artist search in easy/medium/hard mode.
-4. **Ranking**: `affinity × hop_fit × artist_pop_fit × track_pop_fit × familiarity`, plus a multi-source bonus.
-   - `explore` moves the target hop from 0 to 3, the target track popularity from hits to deep cuts, and the
-     artist-popularity ceiling down.
-   - Your LB history (top artists and recordings) lowers the score of familiar artists as `explore` rises.
-     At `explore ≥ 0.3` it drops tracks you've already played.
-   - At most `--per-artist` tracks come from any graph node, and at most half the list can come from a
-     single source.
+```python
+from pvrecs.api import Recommender
+rec = Recommender()                                   # config.yaml / $PVRECS_CONFIG / defaults
+res = rec.generate(artist="Radiohead", explore=0.7)  # blocking I/O: run in a worker thread
+rec.save(res["result_id"], name=None)                 # default name: <date>_<seed>_e<explore>_p<popularity|auto>
+rec.deep_cuts(user="LOSOSb")                          # {"weeks": [{"week": ..., "tracks": [...]}, ...]}
+rec.list_saved(); rec.load_saved(name); rec.get(result_id)
+```
+Results are held in memory (`storage.result_ttl_s`, `result_cache_size`) until saved; saving writes JSON to
+`storage.save_dir`. `Recommender(history=...)` accepts any `HistoryProvider`, e.g. a Maloja/multi-scrobbler adapter.
 
-Output columns: `h` = hop, `p` = track popularity, `*` = artist is in your history. `--json` adds the
-graph path that led to each artist (`Kendrick Lamar > Thundercat > Terrace Martin`).
+HTTP (`pvrecs serve`): `POST /radio`, `GET /deep-cuts`, `GET /results/{id}`, `POST /results/{id}/save`,
+`GET /saved`, `GET /saved/{name}`.
 
-## Setup
+## Config
+
+Copy `config.example.yaml` to `config.yaml`; only include keys you change. The user sections are
+`defaults`, `storage`, `sources` and `server`. `advanced` holds every algorithm constant (weights,
+fanouts, curve widths, caps, rate limits). Unknown keys are an error.
+
+## Pipeline
+
+1. **Seed** → MusicBrainz (name/MBID/`Artist - Title`).
+2. **Graph**: BFS to `1 + round(2·explore)` hops over LB similar-artists, Deezer related, MB relations
+   (hop 1). An artist reached from more than one source gets a bonus. Sparse seeds (fewer than 8 neighbours)
+   borrow artists that share their MB tags (falling back to release-group tags) via troi's LB tag radio.
+   Deezer artists are matched to MBIDs by shared track/album titles, so same-named artists don't collide.
+3. **Candidates**: Deezer top tracks (plus LB popularity with a token), Deezer artist radio, troi LB-radio.
+4. **Score**: `affinity × hop_fit × artist_pop_fit × track_pop_fit × familiarity`, plus a multi-source
+   bonus and jitter. History lowers familiar artists as explore rises and drops already-played tracks.
+   Selection caps tracks per artist and prefers (but doesn't force) a source mix.
+
+## Layout
+
+`models.py` holds the normalised types (`Artist`, `Track`, `Edge`, `Play`, `History`).
+`providers/__init__.py` defines the interfaces. `providers/*` are the adapters, the only code that
+sees raw API JSON. `engine.py` builds the graph and ranks. `api.py` is the library facade with the
+cache and storage. `server.py` and `cli.py` are thin wrappers. `http.py` is a SQLite response cache
+with per-host throttling and backoff. MusicBrainz is held to 1 req/s and backs off exponentially on
+503 rather than failing.
+
+## Dev
 
 ```
-python3.14 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-cp ../Post-vinyl/.env-style values -> .env  # LISTENBRAINZ_TOKEN, LISTENBRAINZ_USERNAME
+python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
 .venv/bin/pytest -q && .venv/bin/ruff check pvrecs tests
 ```
-
-HTTP responses are cached in `.cache/http.sqlite` (7-day TTL). `--offline` uses the cache only.
-A cold run takes about 30–100 s, mostly MusicBrainz's 1 req/s limit. A warm run takes about 1 s.
-Peak RSS is about 90 MB. The venv plus cache use about 300 MB.
