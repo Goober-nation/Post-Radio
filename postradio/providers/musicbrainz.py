@@ -3,7 +3,7 @@ import re
 
 from ..http import Http
 from ..models import Artist, Edge, Track, norm
-from . import ArtistResolver, SimilarArtists, Tagger, parse_rows
+from . import ArtistResolver, SimilarArtists, Tagger, parse_rows, seg
 
 API = "https://musicbrainz.org/ws/2"
 REL_TYPES = {"member of band", "collaboration", "is person", "supporting musician", "founder", "subgroup"}
@@ -25,24 +25,24 @@ class MusicBrainz(ArtistResolver, SimilarArtists, Tagger):
         return Artist(a["name"], mbid=a["id"]) if a else None
 
     def artist_by_mbid(self, mbid: str) -> Artist | None:
-        d = self.http.get(f"{API}/artist/{mbid}", params={"fmt": "json"})
+        d = self.http.get(f"{API}/artist/{seg(mbid)}", params={"fmt": "json"})
         return Artist(d["name"], mbid=mbid) if d and d.get("name") else None
 
     def find_recording(self, artist: str, title: str) -> Track | None:
-        q = f'recording:"{title}" AND artist:"{artist}"'
+        q = f'recording:"{_lucene(title)}" AND artist:"{_lucene(artist)}"'
         d = self.http.get(f"{API}/recording", params={"query": q, "fmt": "json", "limit": 5})
         recs = parse_rows((d or {}).get("recordings"), self._track)
         return recs[0] if recs else None
 
     def recording_by_mbid(self, mbid: str) -> Track | None:
-        d = self.http.get(f"{API}/recording/{mbid}", params={"inc": "artist-credits", "fmt": "json"})
+        d = self.http.get(f"{API}/recording/{seg(mbid)}", params={"inc": "artist-credits", "fmt": "json"})
         got = parse_rows([d], self._track) if isinstance(d, dict) else []
         return got[0] if got else None
 
     def neighbours(self, artist: Artist, limit: int) -> list[Edge]:
         if not artist.mbid:
             return []
-        d = self.http.get(f"{API}/artist/{artist.mbid}", params={"inc": "artist-rels", "fmt": "json"})
+        d = self.http.get(f"{API}/artist/{seg(artist.mbid)}", params={"inc": "artist-rels", "fmt": "json"})
         out = parse_rows((d or {}).get("relations"), lambda rel: Edge(
             Artist(rel["artist"]["name"], mbid=rel["artist"]["id"]), 1.0, self.name)
             if rel.get("type") in REL_TYPES and rel["artist"]["name"] and rel["artist"]["id"] else None)
@@ -52,7 +52,7 @@ class MusicBrainz(ArtistResolver, SimilarArtists, Tagger):
         """Artist tags; if those are empty or junk, fall back to tags on the artist's releases."""
         if not artist.mbid:
             return []
-        d = self.http.get(f"{API}/artist/{artist.mbid}", params={"inc": "tags genres", "fmt": "json"})
+        d = self.http.get(f"{API}/artist/{seg(artist.mbid)}", params={"inc": "tags genres", "fmt": "json"})
         counts = self._count((d or {}).get("tags") or [])
         if not counts:
             d = self.http.get(f"{API}/release-group", params={"artist": artist.mbid, "inc": "tags", "limit": 50,
@@ -85,3 +85,11 @@ class MusicBrainz(ArtistResolver, SimilarArtists, Tagger):
         if not (r["title"] and a["name"] and a["id"] and r["id"]):
             return None
         return Track(r["title"], Artist(a["name"], mbid=a["id"]), recording_mbid=r["id"])
+
+
+_LUCENE_SPECIAL = re.compile(r'([+\-&|!(){}\[\]^"~*?:\\/])')
+
+
+def _lucene(text: str) -> str:
+    """Escape Lucene query syntax so titles like 'He Said "Hi"' or 'AC/DC' search literally."""
+    return _LUCENE_SPECIAL.sub(r"\\\1", text)

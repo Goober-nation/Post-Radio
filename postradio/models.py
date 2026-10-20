@@ -8,6 +8,13 @@ from dataclasses import dataclass, field
 _PAREN = re.compile(r"\s*[\(\[].*")
 
 
+_UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
+
+
+def is_mbid(value: str) -> bool:
+    return bool(_UUID.match(value or ""))
+
+
 def norm(s: str) -> str:
     return "".join(ch for ch in s.casefold() if ch.isalnum())
 
@@ -27,7 +34,10 @@ class Artist:
 
     @property
     def key(self) -> str:
-        return ("~" if self.virtual else "") + norm(self.name)
+        # names with no letters/digits ("!!!", "+/-") would all normalise to ""; fall back to the MBID or
+        # the raw casefolded name so different artists never merge into one graph node
+        base = norm(self.name) or (f"mbid:{self.mbid}" if self.mbid else "raw:" + self.name.strip().casefold())
+        return ("~" if self.virtual else "") + base
 
     def absorb(self, other: "Artist") -> None:
         """Fill gaps from another view of the same artist."""
@@ -52,7 +62,9 @@ class Track:
 
 
 def track_key(artist: str, title: str) -> str:
-    return norm(artist) + "|" + norm(_PAREN.sub("", title))
+    a = norm(artist) or "raw:" + artist.strip().casefold()
+    t = norm(_PAREN.sub("", title)) or "raw:" + title.strip().casefold()
+    return a + "|" + t
 
 
 @dataclass(frozen=True)

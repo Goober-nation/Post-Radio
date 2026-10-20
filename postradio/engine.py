@@ -17,7 +17,8 @@ from dataclasses import dataclass, field
 
 from .brand import POOL_PREFIX
 from .config import Advanced
-from .models import Artist, Edge, History, Taste, Track
+from .errors import InvalidInput, NotFound
+from .models import Artist, Edge, History, Taste, Track, is_mbid
 from .providers import (
     ArtistResolver,
     FeedbackProvider,
@@ -293,9 +294,12 @@ class Radio:
     def resolve(self, artist=None, track=None, artist_mbid=None, recording_mbid=None, genres=None,
                 genre_op="or") -> tuple[Artist, Track | None]:
         r = self.p.resolver
+        for mbid in (artist_mbid, recording_mbid):
+            if mbid is not None and not is_mbid(mbid):
+                raise InvalidInput(f"not an MBID (expected a UUID): {mbid!r}")
         if genres:
             if genre_op not in ("and", "or"):
-                raise ValueError("genre_op must be 'and' or 'or'")
+                raise InvalidInput("genre_op must be 'and' or 'or'")
             label = f" {genre_op} ".join(genres)
             return Artist(label, virtual=True), None
         if recording_mbid or track:
@@ -304,14 +308,14 @@ class Radio:
             else:
                 a, _, title = track.partition(" - ")
                 if not title:
-                    raise ValueError("--track must look like 'Artist - Title'")
+                    raise InvalidInput("track must look like 'Artist - Title'")
                 t = r.find_recording(a.strip(), title.strip())
             if not t:
-                raise ValueError(f"track not found: {recording_mbid or track}")
+                raise NotFound(f"track not found: {recording_mbid or track}")
             return t.artist, t
         a = r.artist_by_mbid(artist_mbid) if artist_mbid else r.find_artist(artist) if artist else None
         if not a:
-            raise ValueError(f"artist not found: {artist_mbid or artist}")
+            raise NotFound(f"artist not found: {artist_mbid or artist}")
         return a, None
 
     # ---------- graph ----------

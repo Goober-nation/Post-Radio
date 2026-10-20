@@ -7,6 +7,13 @@ from typing import TypeVar
 from ..models import Artist, Edge, Feedback, History, Track
 
 T = TypeVar("T")
+
+
+def seg(value) -> str:
+    """URL-encode one path segment (user names, MBIDs): nothing user-supplied can reshape the path."""
+    from urllib.parse import quote
+
+    return quote(str(value), safe="")
 ROW_ERRORS = (KeyError, TypeError, ValueError, AttributeError, IndexError)
 
 

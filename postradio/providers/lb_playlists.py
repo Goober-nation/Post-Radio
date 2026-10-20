@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from ..http import Http
 from ..models import Artist, Track
-from . import parse_rows
+from . import parse_rows, seg
 
 API = "https://api.listenbrainz.org/1"
 JSPF_PLAYLIST = "https://musicbrainz.org/doc/jspf#playlist"
@@ -28,7 +28,7 @@ class LBCreatedFor:
 
     def playlists(self, user: str, kind: str = "weekly-exploration") -> list[CreatedPlaylist]:
         """Newest first. The listing changes weekly, so it bypasses the long HTTP cache."""
-        d = self.http.get(f"{API}/user/{user}/playlists/createdfor", params={"count": 100}, headers=self.headers,
+        d = self.http.get(f"{API}/user/{seg(user)}/playlists/createdfor", params={"count": 100}, headers=self.headers,
                           max_age=3600)
         def convert(item):
             pl = item["playlist"]
@@ -43,7 +43,7 @@ class LBCreatedFor:
         return sorted(out, key=lambda p: p.week, reverse=True)
 
     def _tracks(self, mbid: str) -> list[Track]:
-        d = self.http.get(f"{API}/playlist/{mbid}", headers=self.headers)  # a playlist's body never changes
+        d = self.http.get(f"{API}/playlist/{seg(mbid)}", headers=self.headers)  # a playlist's body never changes
         def convert(t):
             if not (t.get("title") and t.get("creator")):
                 return None

@@ -6,7 +6,7 @@ from troi.plist import plist
 
 from ..http import Http
 from ..models import Artist, Edge, Track, log_popularity, norm
-from . import GenreSource, RadioSource, SimilarArtists, TagRadio, TopTracks, TrackSimilarity, parse_rows
+from . import GenreSource, RadioSource, SimilarArtists, TagRadio, TopTracks, TrackSimilarity, parse_rows, seg
 
 API = "https://api.listenbrainz.org/1"
 LABS = "https://labs.api.listenbrainz.org"
@@ -91,7 +91,7 @@ class LBTopTracks(TopTracks):
         self.full_scale, self.min_share = listeners_full_scale, min_listener_share
 
     def _rows(self, mbid: str) -> list[dict]:
-        rows = self.http.get(f"{API}/popularity/top-recordings-for-artist/{mbid}", headers=self.headers,
+        rows = self.http.get(f"{API}/popularity/top-recordings-for-artist/{seg(mbid)}", headers=self.headers,
                              shape=_trim_top)
         return parse_rows(rows, lambda r: r if r["recording_mbid"] and r["recording_name"] else None)
 
@@ -132,7 +132,7 @@ class TroiRadio(RadioSource):
         if not artist.mbid or mode not in self.MODES:
             return []
         lo, hi = troi_window(popularity, self.window)
-        d = self.http.get(f"{API}/lb-radio/artist/{artist.mbid}", headers=self.headers, params={
+        d = self.http.get(f"{API}/lb-radio/artist/{seg(artist.mbid)}", headers=self.headers, params={
             "mode": mode, "max_similar_artists": self.similar_artists,
             "max_recordings_per_artist": self.per_artist, "pop_begin": lo, "pop_end": hi})
         if not isinstance(d, dict):

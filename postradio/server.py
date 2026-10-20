@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from .api import Recommender
 from .brand import DISPLAY_NAME
+from .errors import NotFound
 
 
 class RadioRequest(BaseModel):
@@ -82,8 +83,10 @@ def create_app(rec: Recommender | None = None) -> FastAPI:
             raise HTTPException(422, "give exactly one of artist, track, artist_mbid, recording_mbid, genres")
         try:
             return rec.generate(**req.model_dump())
-        except ValueError as e:
-            raise HTTPException(422 if "mix" in str(e) else 404, str(e)) from e
+        except NotFound as e:
+            raise HTTPException(404, str(e)) from e
+        except ValueError as e:  # InvalidInput and any other validation error
+            raise HTTPException(422, str(e)) from e
 
     @app.get("/deep-cuts")
     def deep_cuts(user: str | None = None, kind: str = "exploration"):

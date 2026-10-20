@@ -7,7 +7,7 @@ from pathlib import Path
 
 from ..http import Http
 from ..models import History, Play
-from . import HistoryProvider, parse_rows, time_bucket
+from . import HistoryProvider, parse_rows, seg, time_bucket
 
 LB_API = "https://api.listenbrainz.org/1"
 
@@ -27,7 +27,7 @@ class ListenBrainzHistory(HistoryProvider):
     def _pages(self, kind: str, cap: int):
         """First page tells us the total; the rest are fetched in parallel (Http enforces LB's rate)."""
         def page(off):
-            d = self.http.get(f"{LB_API}/stats/user/{self.user}/{kind}",
+            d = self.http.get(f"{LB_API}/stats/user/{seg(self.user)}/{kind}",
                               params={"count": 100, "offset": off, "range": "all_time"}, headers=self.headers)
             return ((d or {}).get("payload") or {})
 

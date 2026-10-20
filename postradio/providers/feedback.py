@@ -7,7 +7,7 @@ from ..brand import SUBSONIC_CLIENT
 from ..config import Advanced
 from ..http import Http
 from ..models import Feedback, rating_score
-from . import FeedbackProvider, parse_rows, time_bucket
+from . import FeedbackProvider, parse_rows, seg, time_bucket
 
 LB_API = "https://api.listenbrainz.org/1"
 
@@ -26,7 +26,7 @@ class LBFeedback(FeedbackProvider):
         return time_bucket(self.max_age)
 
     def _page(self, score: int, off: int) -> dict:
-        return self.http.get(f"{LB_API}/feedback/user/{self.user}/get-feedback",
+        return self.http.get(f"{LB_API}/feedback/user/{seg(self.user)}/get-feedback",
                              params={"score": score, "count": 100, "offset": off, "metadata": "true"},
                              headers=self.headers, max_age=self.max_age) or {}
 

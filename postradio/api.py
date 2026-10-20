@@ -21,6 +21,7 @@ from pathlib import Path
 
 from . import config as config_mod
 from .engine import Params, Providers, Radio
+from .errors import InvalidInput
 from .http import Http
 from .models import Track
 from .providers import FeedbackProvider, HistoryProvider, NoHistory
@@ -159,14 +160,17 @@ class Recommender:
         popularity so it follows explore."""
         d = self.cfg.defaults
         pop = popularity if popularity is not None else (None if auto_popularity else d.popularity)
-        p = Params(explore=d.explore if explore is None else explore, n=n or d.n, per_artist=per_artist or d.per_artist,
+        p = Params(explore=d.explore if explore is None else explore, n=d.n if n is None else n,
+                   per_artist=d.per_artist if per_artist is None else per_artist,
                    seed=rng_seed, popularity=pop, unheard=self._unheard(unheard), mix=self._mix(mix),
                    adv=self.cfg.advanced)
+        if p.n < 1 or p.per_artist < 1:
+            raise InvalidInput("n and per_artist must be at least 1")
         for name, v in (("explore", p.explore), ("popularity", p.popularity)):
             if v is not None and not 0 <= v <= 1:
-                raise ValueError(f"{name} must be in [0, 1]")
+                raise InvalidInput(f"{name} must be in [0, 1]")
         if sum(x is not None for x in (artist, track, artist_mbid, recording_mbid, genres or None)) != 1:
-            raise ValueError("give exactly one seed: artist, track, artist_mbid, recording_mbid or genres")
+            raise InvalidInput("give exactly one seed: artist, track, artist_mbid, recording_mbid or genres")
         res = self.radio.generate(p, artist=artist, track=track, artist_mbid=artist_mbid,
                                   recording_mbid=recording_mbid, genres=genres, genre_op=genre_op)
         return self._remember("radio", res, default_name=self._radio_name(res))
@@ -177,13 +181,13 @@ class Recommender:
         base = self.cfg.stream_mix()
         for k, v in base.items():
             if not 0 <= float(v) <= 1:
-                raise ValueError(f"advanced.mix.{k} must be in [0, 1]")
+                raise InvalidInput(f"advanced.mix.{k} must be in [0, 1]")
         for k, v in (overrides or {}).items():
             key = k.replace("_", "-")
             if key not in base:
-                raise ValueError(f"unknown mix stream '{k}' (one of {', '.join(base)})")
+                raise InvalidInput(f"unknown mix stream '{k}' (one of {', '.join(base)})")
             if not 0 <= float(v) <= 1:
-                raise ValueError(f"mix {k} must be in [0, 1]")
+                raise InvalidInput(f"mix {k} must be in [0, 1]")
             base[key] = float(v)
         return base
 
@@ -193,7 +197,7 @@ class Recommender:
         if v in (None, "none"):
             return None
         if v not in ("tracks", "artists"):
-            raise ValueError("unheard must be 'none', 'tracks' or 'artists'")
+            raise InvalidInput("unheard must be 'none', 'tracks' or 'artists'")
         return v
 
     @staticmethod
@@ -208,9 +212,9 @@ class Recommender:
         """LB's own Weekly Exploration ('deep cuts') or Weekly Jams; each week a separate entry."""
         user = user or self.lb_user
         if not user:
-            raise ValueError("deep_cuts needs an LB user (argument, sources.lb_user or $LISTENBRAINZ_USERNAME)")
+            raise InvalidInput("deep_cuts needs an LB user (argument, sources.lb_user or $LISTENBRAINZ_USERNAME)")
         if kind not in KINDS:
-            raise ValueError(f"kind must be one of {sorted(KINDS)}")
+            raise InvalidInput(f"kind must be one of {sorted(KINDS)}")
         weeks = self.created_for.playlists(user, KINDS[kind])
         res = {"kind": KINDS[kind], "user": user, "weeks": [
             {"week": w.week, "title": w.title, "playlist_mbid": w.mbid,
@@ -222,7 +226,10 @@ class Recommender:
     # ------------------------------------------------------------------ feedback store
     def import_feedback(self, data: dict) -> dict:
         """Append a batch of loves/hates (see providers/feedback_store.py for the format); dated, newest wins."""
-        return self.feedback_store.import_batch(data)  # the store's version() changes -> engine reloads taste
+        try:
+            return self.feedback_store.import_batch(data)
+        except ValueError as e:
+            raise InvalidInput(str(e)) from e  # the store's version() changes -> engine reloads taste
 
     def feedback_batches(self) -> list[dict]:
         return self.feedback_store.batches()

@@ -165,22 +165,81 @@ class Config:
 
 
 def _merge(obj, data: dict, where: str):
+    """where = dotted path of `obj` in the YAML ("" for the root)."""
+    def at(k):
+        return f"{where}.{k}" if where else k
+
     if not isinstance(data, dict):
-        raise ValueError(f"config: '{where}' must be a mapping")
+        raise ValueError(f"config: '{where or 'top level'}' must be a mapping")
     known = {f.name: f for f in fields(obj)}
     updates = {}
     for k, v in data.items():
         if k not in known:
-            raise ValueError(f"config: unknown key '{where}.{k}'")
+            raise ValueError(f"config: unknown key '{at(k)}'")
         cur = getattr(obj, k)
         if is_dataclass(cur):
-            v = _merge(cur, v, f"{where}.{k}")
-        elif isinstance(cur, dict) and isinstance(v, dict):
+            v = _merge(cur, v, at(k))
+        elif isinstance(cur, dict):
+            if not isinstance(v, dict):
+                raise ValueError(f"config: '{at(k)}' must be a mapping")
+            for kk, vv in v.items():
+                sample = next(iter(cur.values()), None)
+                if sample is not None:
+                    _check_type(sample, vv, f"{at(k)}.{kk}")
             v = {**cur, **v}  # partial override of e.g. source_weights
         elif isinstance(cur, tuple):
+            if not isinstance(v, list | tuple):
+                raise ValueError(f"config: '{at(k)}' must be a list")
             v = tuple(v)
+        elif cur is not None:
+            _check_type(cur, v, at(k))
         updates[k] = v
     return replace(obj, **updates)
+
+
+def _check_type(default, value, where: str) -> None:
+    """The YAML value must have the default's type (ints are fine where floats are expected)."""
+    if value is None:
+        return  # null always means "use the fallback" for optional settings
+    if isinstance(default, bool):
+        ok = isinstance(value, bool)
+    elif isinstance(default, int):
+        ok = isinstance(value, int) and not isinstance(value, bool)
+    elif isinstance(default, float):
+        ok = isinstance(value, int | float) and not isinstance(value, bool)
+    else:
+        ok = isinstance(value, type(default))
+    if not ok:
+        raise ValueError(f"config: '{where}' must be {type(default).__name__}, got {value!r}")
+
+
+STREAMS = ("deezer-top", "lb", "deezer-radio", "troi", "track-sim", "lb-tags")
+
+
+def validate(c: "Config") -> "Config":
+    """Ranges and enums that types alone can't express. Raises ValueError naming the key."""
+    d = c.defaults
+    problems = []
+    if not 0 <= d.explore <= 1:
+        problems.append("defaults.explore must be in [0, 1]")
+    if d.popularity is not None and not 0 <= d.popularity <= 1:
+        problems.append("defaults.popularity must be in [0, 1] or null")
+    if d.n < 1:
+        problems.append("defaults.n must be at least 1")
+    if d.per_artist < 1:
+        problems.append("defaults.per_artist must be at least 1")
+    if d.unheard not in (None, "none", "tracks", "artists"):
+        problems.append("defaults.unheard must be null, tracks or artists")
+    if c.sources.history not in ("lb", "file", "none"):
+        problems.append("sources.history must be lb, file or none")
+    for k, v in c.advanced.mix.items():
+        if k not in STREAMS:
+            problems.append(f"advanced.mix: unknown stream '{k}' (one of {', '.join(STREAMS)})")
+        elif not 0 <= v <= 1:
+            problems.append(f"advanced.mix.{k} must be in [0, 1]")
+    if problems:
+        raise ValueError("config: " + "; ".join(problems))
+    return c
 
 
 def load(path: str | Path | None = None) -> Config:
@@ -191,4 +250,4 @@ def load(path: str | Path | None = None) -> Config:
         if path:
             raise FileNotFoundError(p)
         return Config()
-    return _merge(Config(), yaml.safe_load(p.read_text()) or {}, "config")
+    return validate(_merge(Config(), yaml.safe_load(p.read_text()) or {}, ""))
