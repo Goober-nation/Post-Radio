@@ -38,8 +38,8 @@ flowchart TB
 
 | Adapter | Host and endpoints | Auth | Limits and notes |
 |---|---|---|---|
-| `MusicBrainz` | `musicbrainz.org/ws/2`: artist search/lookup, recording, release-group, artist-rels, tags | none | **1 req/s**: 1.1 s spacing, 1 request in flight, 8 attempts, backoff 2–60 s on 503/429. About 4 calls per cold run. |
-| `Deezer` | `api.deezer.com`: `/search/artist`, `/artist/{id}/top`, `/related`, `/radio`, `/genre`, `/genre/{id}/artists` | none | 0.12 s spacing, 6 in flight. The quota error (code 4) is retried; "no data" (code 800) is cached as an answer. |
+| `MusicBrainz` | `musicbrainz.org/ws/2`: artist search/lookup, recording, release-group, artist-rels, tags | none | **1 req/s**: 1.1 s spacing, 1 request in flight, 5 attempts, backoff 2–30 s on 503/429 (nothing after the last attempt). About 4 calls per cold run. |
+| `Deezer` | `api.deezer.com`: `/search/artist`, `/artist/{id}/top`, `/related`, `/radio`, `/genre`, `/genre/{id}/artists` | none | 0.12 s spacing, 6 in flight. The quota error (code 4) is retried; "no data" (code 800) is cached as an answer; any other error body is returned uncached. |
 | `LBSimilar` | `labs.api.listenbrainz.org/similar-artists/json` | none | 0.1 s spacing, 4 in flight |
 | `LBTopTracks` | `api.listenbrainz.org/1/popularity/top-recordings-for-artist` | **token** | Wired in only when a token is set. It is the authoritative artist popularity. |
 | `TroiRadio`, `TroiTagRadio` | `/1/lb-radio/artist/{mbid}`, `/1/lb-radio/tags`, then `POST /1/metadata/recording/` | none | Goes through `Http`; troi's `plist` maths picks recordings, seeded from `--rng-seed`. Tag search also serves genre seeds. |

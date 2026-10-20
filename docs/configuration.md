@@ -23,7 +23,7 @@ doesn't override variables already set.
 
 | Endpoint | Does |
 |---|---|
-| `POST /radio` | Body: exactly one of `artist`, `track`, `artist_mbid`, `recording_mbid`, `genres`. Optional: `genre_op`, `unheard`, `explore`, `popularity`, `n` (1–500), `per_artist`, `rng_seed`, `auto_popularity`, `mix` (`{stream: 0..1}`). Returns 422 for a bad seed count or mix, 404 for an unknown seed. |
+| `POST /radio` | Body: exactly one of `artist`, `track`, `artist_mbid`, `recording_mbid`, `genres`. Optional: `genre_op`, `unheard`, `explore`, `popularity`, `n` (1–500), `per_artist`, `rng_seed`, `auto_popularity`, `mix` (`{stream: 0..1}`). Returns **422** for invalid input (seed count, malformed MBID or track string, out-of-range values, unknown mix stream) and **404** when the seed doesn't exist. |
 | `GET /deep-cuts?user=&kind=exploration\|jams` | LB Weekly Exploration or Jams, one entry per week |
 | `GET /results/{id}` | An unsaved result from memory; 404 once expired |
 | `POST /results/{id}/save` | `{name, overwrite}`; 409 if the file exists |
@@ -49,7 +49,9 @@ to plug in any `HistoryProvider` or `FeedbackProvider`, such as a Maloja or mult
 
 ## config.yaml: user settings
 
-Only the keys you change are needed. Unknown keys are an error.
+Only the keys you change are needed. The config is validated on load: unknown keys, wrong types
+(e.g. `n: "ten"`), out-of-range values (`explore: 2`, `n: 0`) and unknown `mix` streams are errors
+that name the key.
 
 | Section | Keys (default) |
 |---|---|
@@ -72,7 +74,7 @@ Only the keys you change are needed. Unknown keys are an error.
 | Ranking | `familiarity_strength` 0.9 · `familiarity_saturation` 200 · `heard_skip_explore` 0.3 · `heard_penalty` 0.6 · `multi_source_bonus` 0.2 · `jitter` 0.3 · `shuffle_band` 10 · `max_source_share` 0.5 |
 | Taste | `love_factor` 1.5 · `hate_factor` 0.3 · `feedback_track_cap` 50 · `similar_recordings_limit` 50 · `seed_track_similar_limit` 50 · `seed_track_boost` 1.0 · `seed_track_affinity` 0.8 · `feedback_max_age_s` 900 · `history_refresh_s` 86400 · `feedback_store_depth` 5000 |
 | Provider scales | `deezer_fans_full_scale` 6.9 · `deezer_rank_full_scale` 900000 · `lb_listeners_full_scale` 5.5 · `lb_min_listener_share` 0.002 · `troi_window_width` 34 |
-| Rate limits & concurrency | `min_interval_s` (MusicBrainz 1.1, Deezer 0.12, LB 0.34, LB labs 0.1, other 0.05) · `max_in_flight` (MusicBrainz 1, Deezer 6, LB 4, LB labs 4, other 4) · `ratelimit_floor` 2 · `max_attempts` (MusicBrainz 8, other 4) · `backoff_cap_s` 60 · `fetch_workers` 8 |
+| Rate limits & concurrency | `min_interval_s` (MusicBrainz 1.1, Deezer 0.12, LB 0.34, LB labs 0.1, other 0.05) · `max_in_flight` (MusicBrainz 1, Deezer 6, LB 4, LB labs 4, other 4) · `ratelimit_floor` 2 · `max_attempts` (MusicBrainz 5, other 4) · `backoff_cap_s` 30 · `fetch_workers` 8 · `http_cache_keep_s` 2592000 (30 days) |
 
 ## Loves/hates import format
 

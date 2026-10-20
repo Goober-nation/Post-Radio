@@ -92,12 +92,22 @@ seed (explore 0.5, n 30), the counts for deezer-top / lb / radio / troi were:
 - catalogue caps at 0.2: 25 / 10 / 5 / 2
 - catalogue caps at 0.05: 16 / 5 / 4 / 6
 
-## Concurrency
+## Concurrency and robustness
+
+- Each `generate()` call keeps its own state (seed, genres, seed popularity, track boosts, and one
+  snapshot of history and taste) in a `Run` object passed through the pipeline. A shared `Radio` (as in
+  the server) can serve many requests at once without them seeing each other's state.
+- Every provider call is isolated. A source that throws, or returns malformed data, is logged and
+  contributes nothing to that run; the rest of the playlist still gets built. Adapters skip malformed
+  rows one at a time (`parse_rows`). A broken history source degrades to "no personalisation".
 
 - Each `Radio` has one shared thread pool (`fetch_workers`, 8). Graph building and the background
   history/taste load both use it.
-- `Http` gives every host its own start spacing and cap on requests in flight. It honours LB's
-  `X-RateLimit` headers and retries with backoff.
+- `Http` gives every host its own start spacing and cap on requests in flight. These schedules are
+  shared by every `Http` in the process, so extra `Recommender`s don't multiply an API's rate. It
+  honours LB's `X-RateLimit` headers and retries with backoff, but doesn't sleep after the final
+  attempt. The SQLite cache uses WAL mode and evicts rows older than `http_cache_keep_s` (30 days).
+  Deezer "no data" answers are cached; other Deezer error bodies are not.
 - Pool threads carry a thread-local flag. A fetch started from inside a pooled job runs inline, so
   nested fetches can't deadlock a full pool.
 - Graph mutation stays single-threaded.
