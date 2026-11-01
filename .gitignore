@@ -2,5 +2,5 @@
 .cache/
 .env
 __pycache__/
-data/
-dist/
+/data/
+/dist/
