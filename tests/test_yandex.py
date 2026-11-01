@@ -97,9 +97,11 @@ def test_likes_as_feedback_history_and_tags():
     fb = likes.load()
     assert {(f.artist, f.title, f.score, f.source) for f in fb} == {
         ("Alpha", "Alpha song 1", 1.0, "yandex"), ("Kanye West", "Otis", 1.0, "yandex"),
+        ("Jay-Z", "Otis", 1.0, "yandex"),  # every credited artist, not just the first
         ("Alpha", "Alpha song 0", 1.0, "yandex")}
     h = likes.as_history().load()
     assert h.heard(Track("Otis", Artist("Kanye West"))) and h.plays(Artist("Alpha")) == 2
+    assert h.heard(Track("Otis", Artist("Jay-Z")))
     table = genre_table()
     counts = Counter(table["rap"]["mb"] + table["indie"]["mb"])  # Alpha's two albums
     assert likes.tags(Artist("Alpha"), n=10) == sorted(counts, key=lambda g: (-counts[g], g))[:10]
@@ -153,3 +155,17 @@ def test_generate_drops_liked_tracks_and_boosts_liked_artists():
     assert ("Alpha", "Alpha song 0") not in titles and ("Alpha", "Alpha song 1") not in titles
     assert any(a == "Alpha" for a, _ in titles)  # loved artist still in, just not the songs already liked
     radio.close()
+
+
+def test_a_liked_collaboration_is_known_under_every_credited_artist(tmp_path):
+    """Found by the e2e run: a song liked as "A, B" came back when a source offered it under B alone."""
+    from postradio.http import Http
+    from postradio.models import Artist, Track
+    from postradio.providers.yandex import LikedTrack, Playlist, YandexLikes
+
+    likes = YandexLikes(Http(tmp_path / "c.sqlite"), "https://music.yandex.ru/playlists/lk.x")
+    likes._playlist = Playlist("t", 1, [LikedTrack((("Alfie Templeman", "1"), ("Coach Party", "2")), "My Best Friend",
+                                                   1700000000, "indie")])
+    featured = Track("My Best Friend", Artist("Coach Party"))
+    assert likes.history().heard(featured)
+    assert {f.artist for f in likes.load()} == {"Alfie Templeman", "Coach Party"}

@@ -152,7 +152,9 @@ class YandexLikes(FeedbackProvider, Tagger):
             return self._playlist
 
     def load(self) -> list[Feedback]:
-        return [Feedback(t.artist, t.title, 1.0, self.name) for t in self.playlist.tracks]
+        """Every liked track under each of its credited artists: a song liked as "A, B" is the same song when
+        another source offers it under B alone."""
+        return [Feedback(name, t.title, 1.0, self.name) for t in self.playlist.tracks for name, _ in t.artists]
 
     def liked(self) -> list[tuple[Feedback, int | None]]:
         """Every liked track, credited to each of its artists, dated when it was added."""
@@ -160,7 +162,8 @@ class YandexLikes(FeedbackProvider, Tagger):
                 for name, _ in t.artists]
 
     def history(self) -> History:
-        return History.from_plays(Play(t.artist, t.title, t.added_at) for t in self.playlist.tracks)
+        return History.from_plays(Play(name, t.title, t.added_at) for t in self.playlist.tracks
+                                  for name, _ in t.artists)
 
     def as_history(self) -> HistoryProvider:
         return _History(self)
