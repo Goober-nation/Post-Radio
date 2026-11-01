@@ -137,7 +137,12 @@ class Recommender:
         if not f.enabled:
             return []
         out: list[FeedbackProvider] = []
-        for name in f.sources:
+        names = list(f.sources)
+        if self.yandex and "yandex" not in names:
+            # a configured playlist is the user's likes; a source list written before `yandex` existed shouldn't
+            # silently drop it (flow needs likes, not just history)
+            names.insert(1 if names[:1] == ["json"] else 0, "yandex")
+        for name in names:
             if name == "json":
                 out.append(self.feedback_store)
             elif name == "lb":

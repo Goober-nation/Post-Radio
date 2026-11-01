@@ -39,5 +39,5 @@ def test_yandex_flag_turns_on_history_and_taste_even_with_an_old_source_list(tmp
         cli.main(["--config", str(cfg), "radio", "--artist", "X", "--yandex",
                   "https://music.yandex.ru/playlists/lk.abc"])
     c = seen["cfg"]
-    assert c.feedback.sources == ["json", "yandex", "navidrome", "lb"] and c.sources.history == "yandex"
+    assert c.sources.history == "yandex"
     assert c.sources.yandex_playlist == "https://music.yandex.ru/playlists/lk.abc"

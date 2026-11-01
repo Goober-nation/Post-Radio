@@ -132,6 +132,13 @@ def test_recommender_wires_yandex_as_history_feedback_and_similar(tmp_path):
         assert GenreGraph.load({"yandex_parent": 0.3}, 0.2, yandex=genre_table()).related("phonk")
 
 
+def test_configured_playlist_is_taste_even_with_an_old_source_list(tmp_path):
+    c = cfg_with(tmp_path, yandex_playlist=URL, history="yandex")
+    c = dataclasses.replace(c, feedback=dataclasses.replace(c.feedback, sources=["json", "navidrome", "lb"]))
+    with Recommender(c, token="") as rec:
+        assert rec.yandex in rec.feedback and rec.feedback.index(rec.yandex) == 1  # right after json
+
+
 def test_config_rejects_yandex_history_without_a_playlist(tmp_path):
     with pytest.raises(ValueError, match="yandex_playlist"):
         config_mod.validate(cfg_with(tmp_path, history="yandex"))
