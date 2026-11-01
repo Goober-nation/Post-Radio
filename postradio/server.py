@@ -157,12 +157,15 @@ class ListenerIn(BaseModel):
 
 
 class RadioRequest(BaseModel):
-    artist: str | None = None
-    track: str | None = None
-    artist_mbid: str | None = None
-    recording_mbid: str | None = None
+    """Exactly one seed kind. artist / track / artist_mbid / recording_mbid take one value or a list (up to 5,
+    blended)."""
+    artist: str | list[str] | None = None
+    track: str | list[str] | None = None  # "Artist - Title"
+    artist_mbid: str | list[str] | None = None
+    recording_mbid: str | list[str] | None = None
     genres: list[str] | None = None
     genre_op: Literal["or", "and"] = "or"
+    taste: bool = True  # False: likes/dislikes don't change scores (disliked tracks and artists still dropped)
     unheard: Literal["none", "tracks", "artists"] | None = None  # None = config default
     explore: float | None = Field(None, ge=0, le=1)
     popularity: float | None = Field(None, ge=0, le=1)
@@ -183,6 +186,7 @@ class FlowRequest(BaseModel):
     n: int | None = Field(None, ge=1, le=500)
     per_artist: int | None = Field(None, ge=1)
     stops: int = Field(5, ge=1, le=20)
+    start: str | None = None  # the first genre stop; None = one of the listener's strongest genres
     rng_seed: int | None = None
     dry: bool = False  # preview the profile and genre path only; nothing is stored
     timeout_s: float | None = Field(None, gt=0)  # stop with 504 (or a job error) after this long
@@ -250,8 +254,8 @@ def create_app(rec: Recommender | None = None) -> FastAPI:
     # plain `def` handlers run in FastAPI's threadpool, so blocking provider I/O is fine
     @app.post("/radio")
     def radio(req: RadioRequest):
-        seeds = (req.artist, req.track, req.artist_mbid, req.recording_mbid, req.genres or None)
-        if sum(x is not None for x in seeds) != 1:
+        seeds = (req.artist, req.track, req.artist_mbid, req.recording_mbid, req.genres)
+        if sum(bool(x) for x in seeds) != 1:
             raise HTTPException(422, "give exactly one of artist, track, artist_mbid, recording_mbid, genres")
         try:
             args = req.model_dump(exclude={"listener"})
@@ -285,8 +289,8 @@ def create_app(rec: Recommender | None = None) -> FastAPI:
 
     # long runs as background jobs: POST returns 202 + a job id at once; poll GET /jobs/{id}
     def _check_radio(req: RadioRequest) -> None:
-        seeds = (req.artist, req.track, req.artist_mbid, req.recording_mbid, req.genres or None)
-        if sum(x is not None for x in seeds) != 1:
+        seeds = (req.artist, req.track, req.artist_mbid, req.recording_mbid, req.genres)
+        if sum(bool(x) for x in seeds) != 1:
             raise HTTPException(422, "give exactly one of artist, track, artist_mbid, recording_mbid, genres")
 
     @app.post("/jobs/radio", status_code=202)

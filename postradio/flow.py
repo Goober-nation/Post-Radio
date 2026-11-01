@@ -84,14 +84,15 @@ def taste_profile(weights: dict[str, float], genres_by_source: list[tuple[dict[s
 # ---------------------------------------------------------------- path
 def plan_path(spread: list[GenreScore], adj: Adjacency, explore: float, stops: int = 5,
               rng: random.Random | None = None, roots: dict[str, tuple[str, ...]] | None = None,
-              cfg: PlannerConfig | None = None) -> list[str]:
+              cfg: PlannerConfig | None = None, start: str | None = None) -> list[str]:
     """Genre stops, each one graph edge from the last (or, at a dead end, a jump), starting at one of the user's
     strongest genres. Two measures per genre, both 0..1: f = the user's own share (hop 0, relative to their top
     genre; 0 for genres they don't have) and r = spread score (how close it is to their taste at all). A step's
     pull is edge weight × ((1-explore)·f + explore·r·(1-0.7·explore·r)·(1-f)): explore 0 tours only the user's own
     genres; higher explore favours genres they have little of. From explore `destination_from` the path first
     routes to a destination outside the start genre's family (see destination()) and then keeps away from that
-    family: fully at explore 1, partly in between. No revisits."""
+    family: fully at explore 1, partly in between. No revisits. `start` fixes the first stop (any genre in the
+    graph, the listener's or not); the walk then follows the same rules from there."""
     rng, cfg = rng or random.Random(), cfg or PlannerConfig()
     if not spread or stops < 1:
         return []
@@ -105,7 +106,10 @@ def plan_path(spread: list[GenreScore], adj: Adjacency, explore: float, stops: i
         rg = r.get(g, 0.0)
         return (1 - explore) * f.get(g, 0.0) + explore * rg * (1 - cfg.hub_damping * explore * rg) * (1 - f.get(g, 0.0))
 
-    path = [rng.choices(own[:3], weights=[f[g] for g in own[:3]])[0]] if own else [spread[0].genre]
+    if start is not None:
+        path = [start]
+    else:
+        path = [rng.choices(own[:3], weights=[f[g] for g in own[:3]])[0]] if own else [spread[0].genre]
     home = set((roots or {}).get(path[0], ())) | {path[0]}
     away = False  # once at the destination, the start genre's family is damped by (1 - explore)
     if explore >= cfg.destination_from and stops > 1:

@@ -50,6 +50,7 @@ Terms used below:
 |---|---|---|
 | `source_weights` | lb 1.0, deezer 0.85, mb 0.6, tag 0.5, radio 0.5, genre 0.9, yandex 0.85 | Edge weight per similarity source. An artist's affinity is the product of the weights along its best path from the seed. |
 | `agreement_bonus` | 1.15 | Affinity multiplier when a second source reaches the same artist (capped at 1) |
+| `blend_bonus` | 1.3 | Several seeds: affinity multiplier for each further seed that reaches the same artist (capped at 1), so artists between the seeds rank higher |
 | `graph_cap` | 160 | Maximum artists in the graph, split across hops in proportion to the hop number |
 | `fanout` | {1: 14, 2: 8, 3: 6} | Neighbours asked per artist at each hop; deeper hops use the last value |
 | `frontier_base` | 16 | Artists expanded at hop h = `max(frontier_min, frontier_base // h)` |

@@ -68,6 +68,17 @@ preview = rec.flow(explore=0.5, listener=listener, dry=True)             # genre
 Instead of data, a `Listener` can name sources for Post-Radio to fetch itself: `yandex_playlist` (a public
 Yandex playlist link) or `lb_user` (ListenBrainz loves and listening stats).
 
+**Seeds:** one kind per radio (artists, tracks, MBIDs or genres, never mixed). `artist`, `track`,
+`artist_mbid` and `recording_mbid` take a list of up to 5: they become one graph, and artists close to more
+than one seed rank higher (`advanced.blend_bonus`). `res.seeds` lists them; `res.seed` is the first.
+
+**Taste switch:** `generate(..., taste=False)` stops likes and dislikes from changing scores. Disliked tracks
+and artists are still dropped, and `unheard` still uses history.
+
+**Flow start:** `flow(..., start="jazz rap")` makes that genre the first stop (any genre of the graph; an
+unknown name raises `InvalidInput` with close names). Unset, the walk starts at one of the listener's three
+strongest genres. From a genre the listener has none of, a low explore heads back toward their own genres.
+
 **Token:** with an `lb_token`, a cold flow takes ~20 s instead of minutes. ListenBrainz titles settle which
 same-named Deezer artist is meant, and ListenBrainz becomes a track source too.
 

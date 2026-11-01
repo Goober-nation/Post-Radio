@@ -262,6 +262,19 @@ Tests: `tests/test_service.py` (8), mutation-checked (removing the stage check o
 Then the webpage: an HTTP client instead of `app/radio.py`, deleting the moved modules, flow tab with dry
 preview, new error messages, compose with both services.
 
+## Post-Vinyl radio and flow features (user, 2026-11-01)
+
+Wanted for Post-Vinyl: radios from artists, tracks or genres (the user picks one kind, never mixed), with
+or without taste, plus explore and popularity; flow with explore, popularity and a start. Decisions:
+- **Several seeds blend:** all at hop 0 of one graph; each further seed reaching an artist multiplies its
+  affinity by `advanced.blend_bonus` (1.3). Up to 5, repeated seeds count once. `Playlist.seeds`.
+- **Taste off = scoring only:** `taste=False`; disliked tracks and artists are still dropped, history
+  filters still apply. Reported as `stats["taste"]`.
+- **Flow start = a chosen genre** (`start=`, CLI `--start`); unset keeps the top-3 pick. Not added: start
+  from an artist, recent mood.
+- Tests: `tests/test_seeds.py`. Untested: radio streams (Deezer radio, troi) now run around every seed;
+  the fakes have no radio source.
+
 ## Dry runs and seeds (user request, 2026-11-01)
 
 - `radio --dry`: the seed and the artist graph by hop, no tracks. `flow --dry`: the profile and the genre

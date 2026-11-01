@@ -76,6 +76,8 @@ class Params:
     unheard: str | None = None  # None | "tracks" (drop played tracks) | "artists" (also drop known artists)
     mix: dict[str, float] = field(default_factory=dict)  # stream -> 0..1 share of what it offers (missing = 1)
     stops: int = 5  # flow mode: genre stops along the path
+    taste: bool = True  # False: likes/dislikes don't change scores; disliked tracks and artists are still dropped
+    start: str | None = None  # flow mode: the first genre stop (None = one of the listener's strongest)
     adv: Advanced = field(default_factory=Advanced)
 
     @property
@@ -130,12 +132,13 @@ class Node:
     affinity: float  # best-path product of edge weights from the seed
     via: set[str] = field(default_factory=set)
     parent: str | None = None  # key of the node this was reached from
+    roots: set[str] = field(default_factory=set)  # the seeds (keys) this artist was reached from
 
 
 class Graph:
-    def __init__(self, agreement_bonus: float = Advanced.agreement_bonus):
+    def __init__(self, agreement_bonus: float = Advanced.agreement_bonus, blend_bonus: float = Advanced.blend_bonus):
         self.nodes: dict[str, Node] = {}
-        self.agreement_bonus = agreement_bonus
+        self.agreement_bonus, self.blend_bonus = agreement_bonus, blend_bonus
 
     def add(self, artist: Artist, hop: int, affinity: float, source: str, parent: Node | None = None) -> Node:
         n = self.nodes.get(artist.key)
@@ -149,6 +152,10 @@ class Graph:
             if source not in n.via:
                 n.affinity = min(1.0, n.affinity * self.agreement_bonus)
         n.via.add(source)
+        roots = parent.roots if parent else ({artist.key} if hop == 0 else set())
+        if n.roots and roots - n.roots:  # a further seed reaches it: blending favours shared neighbours
+            n.affinity = min(1.0, n.affinity * self.blend_bonus ** len(roots - n.roots))
+        n.roots |= roots
         return n
 
     def node_for(self, artist: Artist, hop: int, affinity: float, source: str, parent: Node | None) -> Node:
@@ -382,13 +389,40 @@ class Radio:
             raise NotFound(f"artist not found: {artist_mbid or artist}")
         return a, None
 
+    MAX_SEEDS = 5
+
+    def resolve_seeds(self, artist=None, track=None, artist_mbid=None, recording_mbid=None, genres=None,
+                      genre_op="or") -> list[tuple[Artist, Track | None]]:
+        """Like resolve(), but artist / track / artist_mbid / recording_mbid may each be a list (one kind per
+        radio, up to MAX_SEEDS). Genres stay one virtual seed. Repeated seeds count once."""
+        if genres:
+            return [self.resolve(genres=genres, genre_op=genre_op)]
+        kind, values = next(((k, v) for k, v in (("artist", artist), ("track", track), ("artist_mbid", artist_mbid),
+                                                   ("recording_mbid", recording_mbid)) if v), (None, None))
+        if kind is None:
+            raise InvalidInput("give a seed: artist, track, artist_mbid, recording_mbid or genres")
+        values = [values] if isinstance(values, str) else list(dict.fromkeys(values))
+        if not 1 <= len(values) <= self.MAX_SEEDS:
+            raise InvalidInput(f"1 to {self.MAX_SEEDS} seeds of one kind")
+        out, seen = [], set()
+        for v in values:
+            a, t = self.resolve(**{kind: v})
+            if (a.key, t.key if t else None) not in seen:
+                seen.add((a.key, t.key if t else None))
+                out.append((a, t))
+        return out
+
     # ---------- graph ----------
-    def build_graph(self, seed: Artist, p: Params, run: Run | None = None) -> Graph:
+    def build_graph(self, seed: Artist | list[Artist], p: Params, run: Run | None = None) -> Graph:
+        """The artist graph around one seed, or several (all at hop 0; artists near more than one seed get
+        advanced.blend_bonus per further seed)."""
         run = run or Run()
         a, cap = self.a, self.a.graph_cap
-        g = Graph(a.agreement_bonus)
-        g.add(seed, 0, 1.0, "seed")
-        frontier = [g.nodes[seed.key]]
+        g = Graph(a.agreement_bonus, a.blend_bonus)
+        seeds = seed if isinstance(seed, list) else [seed]
+        for s_ in seeds:
+            g.add(s_, 0, 1.0, "seed")
+        frontier = list({s_.key: g.nodes[s_.key] for s_ in seeds}.values())
         budget = {h: cap * h / sum(range(1, p.max_hops + 1)) for h in range(1, p.max_hops + 1)}
         for hop in range(1, p.max_hops + 1):
             self._report("graph", hop, p.max_hops)
@@ -408,7 +442,7 @@ class Radio:
                     new += self._genre_neighbours(g, src, p, run)
                     continue
                 new += [self._link(g, src, e, hop) for e in edges_by_src[src.artist.key]]
-            if hop == 1 and len(g.nodes) - 1 < a.sparse_graph and not seed.virtual:
+            if hop == 1 and len(seeds) == 1 and len(g.nodes) - 1 < a.sparse_graph and not seeds[0].virtual:
                 new += self._tag_neighbours(g, frontier[0], p)
             ranked = sorted({n.artist.key: n for n in new if n.hop == hop}.values(), key=lambda n: -n.affinity)
             frontier = ranked[: max(a.frontier_min, a.frontier_base // hop)]
@@ -471,10 +505,14 @@ class Radio:
             out += [t for t in tracks if not self.junk.search(t.title)]
         return out
 
-    def candidates(self, g: Graph, seed: Node, p: Params, seed_track: Track | None = None,
-                   rng: random.Random | None = None, run: Run | None = None) -> list[tuple[Track, Node]]:
+    def candidates(self, g: Graph, seed: Node | list[Node], p: Params,
+                   seed_track: Track | list[Track] | None = None, rng: random.Random | None = None,
+                   run: Run | None = None) -> list[tuple[Track, Node]]:
         rng = rng or random.Random()
         run = run or Run()
+        seeds = seed if isinstance(seed, list) else [seed]
+        seed_tracks = seed_track if isinstance(seed_track, list) else [seed_track] if seed_track else []
+        seed, seed_keys = seeds[0], {n.artist.key for n in seeds}
         # pass 1: graph-only weight picks a shortlist; fetching their catalogues also fills in artist
         # popularity, which pass 2 folds in (this is what keeps deep exploration off the mainstream)
         by_weight = sorted(g.nodes.values(), key=lambda n: -self.artist_weight(n, p, run))
@@ -489,14 +527,16 @@ class Radio:
         for n in nodes:
             for t in catalogue[n.artist.key]:
                 streams[next(iter(t.sources), "")].append((t, n))  # catalogue tracks carry one source each
-        if seed_track and self.p.track_similarity:
-            for t, w in self._safe(self.p.track_similarity.similar, seed_track, self.a.seed_track_similar_limit):
-                hop = 0 if t.artist.key == seed.artist.key else 1
-                tn = g.node_for(t.artist, hop, self.a.seed_track_affinity * w, "track-sim", seed)
+        for st in seed_tracks if self.p.track_similarity else []:
+            parent = g.nodes.get(st.artist.key, seed)
+            for t, w in self._safe(self.p.track_similarity.similar, st, self.a.seed_track_similar_limit):
+                hop = 0 if t.artist.key in seed_keys else 1
+                tn = g.node_for(t.artist, hop, self.a.seed_track_affinity * w, "track-sim", parent)
                 t.artist = tn.artist
                 t.popularity = p.pop  # unknown; don't let the popularity fit decide these
                 t.sources = {"track-sim"}  # one stream, one label: no unearned multi-source bonus
-                seed_bonus[id(t)] = 1 + self.a.seed_track_boost * w  # applied only if the track survives the cap
+                # applied only if the track survives the cap
+                seed_bonus[id(t)] = max(seed_bonus.get(id(t), 1.0), 1 + self.a.seed_track_boost * w)
                 streams["track-sim"].append((t, tn))
         if seed.artist.virtual:
             for prov in self.p.genres:
@@ -505,7 +545,7 @@ class Radio:
                     t.artist = tn.artist
                     streams["lb-tags"].append((t, tn))
         # radio around the seed and its closest neighbours brings in artists outside the graph
-        radio_seeds = [] if seed.artist.virtual else [seed]
+        radio_seeds = [] if seed.artist.virtual else seeds
         jobs = [(n, prov) for n in radio_seeds + [n for n in nodes if n.hop == 1][: self.a.radio_neighbours]
                 for prov in self.p.radios]
         # one RNG per stream, derived from the run seed: reproducible regardless of thread timing
@@ -515,7 +555,7 @@ class Radio:
                                    "radio")
         for (n, _), tracks in zip(jobs, fetched_radio, strict=True):
             for t in tracks:
-                hop = 0 if t.artist.key == seed.artist.key else n.hop + 1
+                hop = 0 if t.artist.key in seed_keys else n.hop + 1
                 rn = g.node_for(t.artist, hop, n.affinity * self.a.source_weights["radio"], "radio", n)
                 t.artist = rn.artist
                 streams[next(iter(t.sources), "")].append((t, rn))
@@ -555,28 +595,38 @@ class Radio:
         rng = random.Random(p.seed)
         run = Run(genres=list(seed_args.get("genres") or []), genre_op=seed_args.get("genre_op") or "or")
         self._report("seed")
-        seed_artist, seed_track = self.resolve(**seed_args)
-        self.log(f"seed: {seed_artist.name} ({seed_artist.mbid})" + (f" / {seed_track.title}" if seed_track else ""))
+        resolved = self.resolve_seeds(**seed_args)
+        seed_artist, seed_track = resolved[0]
+        seed_artists = list({a.key: a for a, _ in resolved}.values())
+        seed_tracks = [t for _, t in resolved if t]
+        for a_, t_ in resolved:
+            self.log(f"seed: {a_.name} ({a_.mbid})" + (f" / {t_.title}" if t_ else ""))
 
         def personal():  # history + taste don't affect graph building, so they load alongside it
             taste = self.taste()
             return self.history(), taste, self._safe(self._track_layer, taste, default={}) if taste else {}
 
         if dry:
-            g = self.build_graph(seed_artist, p, run)
-            return self._preview(g, seed_artist, seed_track, p, run)
+            g = self.build_graph(seed_artists, p, run)
+            return self._preview(g, seed_artist, seed_track, p, run, resolved)
 
         with ThreadPoolExecutor(max_workers=1) as bg:
             pending = bg.submit(personal)
-            g = self.build_graph(seed_artist, p, run)
-            seed = g.nodes[seed_artist.key]
-            if not seed.artist.virtual:
-                self._top_tracks(seed.artist)  # fills seed popularity before anything is weighted
+            g = self.build_graph(seed_artists, p, run)
+            seeds = [g.nodes[a_.key] for a_ in seed_artists]
+            seed = seeds[0]
+            if not seed.artist.virtual:  # fills seed popularity before anything is weighted
+                self._map(lambda n: self._top_tracks(n.artist), seeds)
             run.history, run.taste, run.track_boost = pending.result()  # joined before anything is weighted
+        banned = None
+        if not p.taste:  # opinions stop shaping scores; what the listener dislikes still never plays
+            banned = run.taste
+            run.taste, run.track_boost = Taste(), {}
         history, taste = run.history, run.taste
-        run.seed_pop = seed.artist.popularity
+        pops = [n.artist.popularity for n in seeds if n.artist.popularity is not None]
+        run.seed_pop = sum(pops) / len(pops) if pops else None
         self.last_run = run
-        cands = self.candidates(g, seed, p, seed_track, random.Random(rng.random()), run)
+        cands = self.candidates(g, seeds, p, seed_tracks, random.Random(rng.random()), run)
 
         self._report("scoring", detail=f"{len(cands)} candidates")
         merged: dict[str, tuple[Track, Node]] = {}
@@ -591,12 +641,14 @@ class Radio:
                 old.deezer_id = old.deezer_id or t.deezer_id
             else:
                 merged[t.key] = (t, n)
-        if seed_track:
-            merged.pop(seed_track.key, None)
+        for st in seed_tracks:
+            merged.pop(st.key, None)
 
         scored = []
         for t, n in merged.values():
             if n.artist.virtual:
+                continue
+            if banned is not None and (banned.track(t) < 0 or banned.artist(n.artist) < 0):
                 continue
             if p.unheard and history.heard(t):
                 continue
@@ -623,6 +675,7 @@ class Radio:
         return {
             "seed": {"artist": None if seed_artist.virtual else seed_artist.name, "artist_mbid": seed_artist.mbid,
                      "track": seed_track.title if seed_track else None, "popularity": run.seed_pop},
+            "seeds": self._seed_rows(resolved), "taste": p.taste,
             "genres": run.genres or None, "genre_op": run.genre_op if run.genres else None,
             "explore": p.explore, "popularity": p.popularity, "unheard": p.unheard, "mode": p.radio_mode,
             "mix": {k: v for k, v in p.mix.items() if v < 1} or None,
@@ -631,8 +684,13 @@ class Radio:
             "tracks": [self._row(s, t, n, g, history, taste, run.boost(t)) for b in bands for (s, t, n) in b],
         }
 
+    @staticmethod
+    def _seed_rows(resolved: list[tuple[Artist, Track | None]]) -> list[dict]:
+        return [{"artist": None if a.virtual else a.name, "artist_mbid": a.mbid, "track": t.title if t else None,
+                 "popularity": a.popularity} for a, t in resolved]
+
     def _preview(self, g: Graph, seed_artist: Artist, seed_track: Track | None, p: Params, run: Run,
-                 per_hop: int = 12) -> dict:
+                 resolved: list | None = None, per_hop: int = 12) -> dict:
         """Dry radio: the artist graph by hop, strongest first, with how each artist was reached."""
         by_hop: dict[int, list[Node]] = defaultdict(list)
         for n in g.nodes.values():
@@ -642,6 +700,7 @@ class Radio:
             "dry": True, "rng_seed": p.seed,
             "seed": {"artist": None if seed_artist.virtual else seed_artist.name, "artist_mbid": seed_artist.mbid,
                      "track": seed_track.title if seed_track else None},
+            "seeds": self._seed_rows(resolved or [(seed_artist, seed_track)]),
             "genres": run.genres or None, "explore": p.explore, "popularity": p.popularity, "mode": p.radio_mode,
             "max_hops": p.max_hops, "target_hop": round(p.target_hop, 2), "popularity_target": round(p.pop, 2),
             "graph_size": len(g.nodes),
@@ -739,7 +798,8 @@ class Radio:
         history, taste = self.history(), self.taste()
         top, resolved, sources, profile, spread, used = self.profile(graph)
         roots = {g: n.roots for g, n in graph.nodes.items()}
-        path = flow_mod.plan_path(spread, graph.adj, p.explore, p.stops, random.Random(rng.random()), roots, cfg)
+        path = flow_mod.plan_path(spread, graph.adj, p.explore, p.stops, random.Random(rng.random()), roots, cfg,
+                                  start=p.start)
         self.log("path: " + " -> ".join(path))
         self._report("path", len(path), p.stops, " -> ".join(path))
         counts = flow_mod.allocate(p.n, len(path))

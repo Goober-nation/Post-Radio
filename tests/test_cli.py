@@ -10,7 +10,7 @@ def _parse(argv):
 def test_global_flags_work_before_or_after_the_subcommand():
     before = _parse(["--json", "--no-token", "--config", "c.yaml", "radio", "--artist", "X"])
     after = _parse(["radio", "--artist", "X", "--json", "--no-token", "--config", "c.yaml"])
-    assert before == after == {"json": True, "no_token": True, "offline": None, "config": "c.yaml", "artist": "X"}
+    assert before == after == {"json": True, "no_token": True, "offline": None, "config": "c.yaml", "artist": ["X"]}
 
 
 def test_unset_global_flags_are_absent_not_false_overrides():

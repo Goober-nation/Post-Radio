@@ -65,7 +65,8 @@ class Playlist:
     explore: float
     popularity: float | None  # None = followed explore
     rng_seed: int | None  # pass back as rng_seed to repeat the run
-    seed: Seed | None = None  # radio
+    seed: Seed | None = None  # radio: the (first) seed
+    seeds: list[Seed] = field(default_factory=list)  # radio: every seed, when several were blended
     genre_path: list[str] | None = None  # flow: the genre stops, in order
     profile: list[dict[str, Any]] | None = None  # flow: [{"genre", "share"}] the listener's genres
     familiarity: float | None = None  # flow: mean own-genre share along the path (1 = all yours)
@@ -84,6 +85,7 @@ class Playlist:
         d = _pick(cls, d)
         d["tracks"] = [PlaylistTrack.from_dict(t) for t in d.get("tracks") or []]
         d["seed"] = Seed(**_pick(Seed, d["seed"])) if d.get("seed") else None
+        d["seeds"] = [Seed(**_pick(Seed, x)) for x in d.get("seeds") or []]
         return cls(**d)
 
 
@@ -116,6 +118,7 @@ class GraphPreview:
     """radio dry=True: the seed and its artist graph by hop, no tracks."""
     rng_seed: int | None
     seed: Seed
+    seeds: list[Seed]
     explore: float
     popularity: float | None
     mode: str

@@ -70,10 +70,10 @@ def parser() -> argparse.ArgumentParser:
 
     r = sub.add_parser("radio", help="generate an exploration radio playlist")
     g = r.add_mutually_exclusive_group(required=True)
-    g.add_argument("--artist")
-    g.add_argument("--track", help="'Artist - Title'")
-    g.add_argument("--artist-mbid")
-    g.add_argument("--recording-mbid")
+    g.add_argument("--artist", action="append", help="repeat to blend up to 5 artists")
+    g.add_argument("--track", action="append", help="'Artist - Title'; repeat to blend up to 5")
+    g.add_argument("--artist-mbid", action="append")
+    g.add_argument("--recording-mbid", action="append")
     g.add_argument("--genre", help="genre seed; comma-separate several (e.g. 'shoegaze,dream pop')")
     r.add_argument("--genre-op", choices=["or", "and"], default="or", help="several genres: any (or) / all (and)")
     r.add_argument("--unheard", choices=["none", "tracks", "artists"],
@@ -94,6 +94,8 @@ def parser() -> argparse.ArgumentParser:
     r.add_argument("--yandex", metavar="URL", help="public Yandex Music playlist (e.g. your likes) as history + taste")
     r.add_argument("--yandex-tracks", type=int, metavar="N", help="only the newest N playlist tracks (default: all)")
     r.add_argument("--no-feedback", action="store_true", help="ignore loves/hates/ratings")
+    r.add_argument("--no-taste", action="store_true",
+                   help="likes/dislikes don't change scores (disliked tracks and artists are still dropped)")
     r.add_argument("--navidrome-url", help="read stars/ratings from this Navidrome (creds from env)")
     r.add_argument("--save", nargs="?", const="", metavar="NAME", help="save the result (default name if omitted)")
     r.add_argument("--dry", action="store_true", help="preview: resolve the seed and show the artist graph by hop, "
@@ -110,6 +112,7 @@ def parser() -> argparse.ArgumentParser:
     fl.add_argument("-n", type=int)
     fl.add_argument("--per-artist", type=int)
     fl.add_argument("--stops", type=int, default=5, help="genre stops along the path (5)")
+    fl.add_argument("--start", metavar="GENRE", help="first genre stop (default: one of your strongest genres)")
     fl.add_argument("--rng-seed", type=int)
     fl.add_argument("--save", nargs="?", const="", metavar="NAME")
     fl.add_argument("--dry", action="store_true", help="preview: profile and genre path only, no tracks "
@@ -226,7 +229,7 @@ def main(argv=None):
         return
     if a.cmd == "flow":
         res = rec.flow(explore=a.explore, popularity=a.popularity, n=a.n, per_artist=a.per_artist,
-                       stops=a.stops, rng_seed=a.rng_seed, dry=a.dry, keep=a.save is not None).to_dict()
+                       stops=a.stops, start=a.start, rng_seed=a.rng_seed, dry=a.dry, keep=a.save is not None).to_dict()
         if a.dry and not a.json:
             log(f"rng seed: {res['rng_seed']} (repeat with --rng-seed {res['rng_seed']})")
             print(f"path: {' -> '.join(res['genre_path'])}")
@@ -255,7 +258,7 @@ def main(argv=None):
         res = rec.generate(artist=a.artist, track=a.track, artist_mbid=a.artist_mbid, recording_mbid=a.recording_mbid,
                            genres=genres, genre_op=a.genre_op, unheard=a.unheard, explore=a.explore,
                            popularity=a.popularity, n=a.n, per_artist=a.per_artist, rng_seed=a.rng_seed,
-                           auto_popularity=a.auto_popularity, mix=_parse_mix(a.mix), dry=a.dry,
+                           auto_popularity=a.auto_popularity, mix=_parse_mix(a.mix), dry=a.dry, taste=not a.no_taste,
                            keep=a.save is not None).to_dict()
         if a.dry:
             if a.json:

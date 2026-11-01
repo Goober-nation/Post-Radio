@@ -71,6 +71,7 @@ advanced:
     genre: 0.9
     yandex: 0.85
   agreement_bonus: 1.15
+  blend_bonus: 1.3
   graph_cap: 160
   fanout:
     1: 14

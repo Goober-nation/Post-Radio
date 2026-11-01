@@ -100,6 +100,7 @@ class Advanced:
     source_weights: dict[str, float] = field(default_factory=lambda: {
         "lb": 1.0, "deezer": 0.85, "mb": 0.6, "tag": 0.5, "radio": 0.5, "genre": 0.9, "yandex": 0.85})
     agreement_bonus: float = 1.15
+    blend_bonus: float = 1.3  # several seeds: affinity multiplier per further seed reaching an artist
     graph_cap: int = 160
     fanout: dict[int, int] = field(default_factory=lambda: {1: 14, 2: 8, 3: 6})
     frontier_base: int = 16  # frontier size at hop h = max(frontier_min, frontier_base // h)
