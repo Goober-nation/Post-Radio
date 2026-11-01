@@ -275,6 +275,38 @@ or without taste, plus explore and popularity; flow with explore, popularity and
 - Tests: `tests/test_seeds.py`. Untested: radio streams (Deezer radio, troi) now run around every seed;
   the fakes have no radio source.
 
+## E2E run 1 (2026-11-01): findings
+
+Harness: `scripts/e2e/run.py` (results in gitignored `e2e-runs/`). Install from GitHub 28 s; data release
+fetch 32 s (252 MB, store of 3.03 M artists); 11 flows and 14 radios with the user's playlist export and an
+LB token. Cold flows 13–51 s, radios 6–24 s, warm repeats ~1 s. Explore, popularity, taste off, multi-seed,
+start genre, rng_seed repeats and dry previews all behave as designed.
+
+To fix (found by the run):
+1. **Liked collaborations come back**: Yandex `load()`/`history()` credit only the first artist; a liked
+   song offered under a featured artist isn't recognised. Credit every artist (as `liked()` does).
+2. **Unknown artist seeds don't fail**: a nonsense name matched an artist literally named "NonExistent" in
+   the store and returned an empty playlist without error. Store name matching is too loose for seeds, and
+   an empty result should raise NotFound.
+3. **Genre radio drifts**: `neo soul or trip hop` came out mostly EBM/futurepop at hop 2. Later hops need to
+   keep carrying a requested genre (store genres).
+4. **A seed can vanish when blending**: three tracks gave 21 / 9 / 0 tracks per seed. Add a per-seed floor.
+5. **Seed under another name**: Kanye West radio picked "DONDA" (Kanye's own side profile) as a small new
+   artist. Treat MusicBrainz same-person/project relations as the seed.
+6. **Odd artist genres** in flow stops (a crooner under hip hop, harsh noise under plunderphonics, dub
+   techno under dancehall, an anime composer under alternative rock, eurodance under pop rap): trace through
+   the store/index.
+7. **Flow paths**: plunderphonics as stop 2 at explore 0.5; explore 1 ends on the listener's own genres; a
+   chosen foreign start jumps straight back instead of walking.
+8. **Timeout overshoot**: 0.5 s stopped at 2.6 s (a running fetch isn't interrupted). Docs say "within a
+   second": say "after the current fetch".
+9. **Release manifest**: `musicbrainz_dump` is "unknown" in `data-2026-11`.
+10. Known: regionality (French rap / nerdcore as "new hip hop"); radio tracks have artist MBIDs for 67%
+    (Deezer radio gives none; Deezer ids 97%).
+
+Harness gaps to close: check that every seed contributes, that radio tracks carry a requested genre, and
+that an unknown seed raises.
+
 ## Dry runs and seeds (user request, 2026-11-01)
 
 - `radio --dry`: the seed and the artist graph by hop, no tracks. `flow --dry`: the profile and the genre
