@@ -114,6 +114,20 @@ def test_build_store_step_downloads_imports_indexes_and_drops_the_dump(tmp_path)
     assert not (d / "artist.tar.xz").exists()
 
 
+def test_build_skipping_the_dump_still_indexes_an_existing_store(tmp_path):
+    dump = tmp_path / "src.tar.xz"
+    make_dump(dump)
+    d = tmp_path / "data"
+    d.mkdir()
+    http = FakeHttp(texts={f"{data.DUMPS}/LATEST": "D1"}, files={f"{data.DUMPS}/D1/artist.tar.xz": dump})
+    data.build_store(http, d, NODES, data.BuildOptions(), log=lambda _m: None)
+    (d / INDEX_FILE).unlink()
+    out = data.build(FakeHttp(), None, d, tmp_path / "dist", data.BuildOptions(skip=frozenset({"graph", "dump",
+                                                                                              "weights"})),
+                     log=lambda _m: None)
+    assert (d / INDEX_FILE).exists() and (out / INDEX_FILE).exists()
+
+
 def test_build_rejects_unknown_steps(tmp_path):
     with pytest.raises(ValueError, match="unknown build step"):
         data.build(FakeHttp(), None, tmp_path, tmp_path, data.BuildOptions(skip=frozenset({"grpah"})))

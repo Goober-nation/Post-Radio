@@ -106,20 +106,25 @@ def build_store(http: Http, data_dir: Path, nodes: set[str], opts: BuildOptions,
     log(f"dump {latest}: downloading {DUMP_FILE} (~1.7 GB, resumable)")
     http.download(f"{DUMPS}/{latest}/{DUMP_FILE}", archive, log=log)
     import_dump(archive, data_dir / STORE_FILE, nodes, log=log)
-    store = ArtistStore(data_dir / STORE_FILE)
-    try:
-        idx = store.genre_index(nodes, opts.index_cap)
-    finally:
-        store.close()
-    _write_json(data_dir / INDEX_FILE, {"source": "MusicBrainz JSON dump; genre votes are CC BY-NC-SA 3.0",
-                                        "dump": latest, "cap": opts.index_cap,
-                                        "format": "genre -> [[mbid, name], ...] strongest first", "genres": idx},
-                separators=(",", ":"))
-    log(f"index: {len(idx)} genres with artists, {sum(map(len, idx.values())):,} entries")
+    build_index(data_dir, nodes, opts.index_cap, latest, log)
     if not opts.keep_dump:
         archive.unlink(missing_ok=True)
         stamp.unlink(missing_ok=True)
     return latest
+
+
+def build_index(data_dir: Path, nodes: set[str], cap: int, dump: str, log: Callable[[str], None]) -> None:
+    """genre_artists.json from the store: the strongest `cap` artists per graph genre."""
+    store = ArtistStore(data_dir / STORE_FILE)
+    try:
+        idx = store.genre_index(nodes, cap)
+    finally:
+        store.close()
+    _write_json(data_dir / INDEX_FILE, {"source": "MusicBrainz JSON dump; genre votes are CC BY-NC-SA 3.0",
+                                        "dump": dump, "cap": cap,
+                                        "format": "genre -> [[mbid, name], ...] strongest first", "genres": idx},
+                separators=(",", ":"))
+    log(f"index: {len(idx)} genres with artists, {sum(map(len, idx.values())):,} entries")
 
 
 def build_weights(lb: LBData, sim: LBSimilar, data_dir: Path, nodes: set[str], opts: BuildOptions,
@@ -199,6 +204,8 @@ def build(http: Http, mb: MusicBrainz, data_dir: Path, out_root: Path, opts: Bui
     if "dump" not in opts.skip:
         info["musicbrainz_dump"] = build_store(http, data_dir, nodes, opts, log)
         _write_json(info_path, info)
+    elif (data_dir / STORE_FILE).is_file() and not (data_dir / INDEX_FILE).is_file():
+        build_index(data_dir, nodes, opts.index_cap, info.get("musicbrainz_dump", "unknown"), log)
     if "weights" not in opts.skip:
         build_weights(LBData(http), LBSimilar(http), data_dir, nodes, opts, log)
     return package(data_dir, out_root, info.get("musicbrainz_dump", "unknown"), log)
