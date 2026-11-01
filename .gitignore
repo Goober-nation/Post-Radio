@@ -4,3 +4,4 @@
 __pycache__/
 /data/
 /dist/
+/e2e-runs/
