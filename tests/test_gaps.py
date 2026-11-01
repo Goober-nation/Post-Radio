@@ -29,7 +29,7 @@ def test_genre_seed_end_to_end_through_recommender(rec):  # noqa: F811
     rec.radio = Radio(Providers(resolver=Resolver(), similar=[Similar()], tracks=[Tracks()], genres=[Genres()]),
                       rec.cfg.advanced, log=lambda *_: None)
     res = rec.generate(genres=["shoegaze", "dream pop"], genre_op="and", n=6, keep=True)
-    assert res["genres"] == ["shoegaze", "dream pop"] and res["genre_op"] == "and"
-    assert res["tracks"] and {t["artist"] for t in res["tracks"]} <= {"Beta", "Gamma"}
-    assert "genre-shoegaze-dream-pop" in res["default_name"]
-    assert rec.save(res["result_id"]).exists()
+    assert res.seed.genres == ["shoegaze", "dream pop"] and res.seed.genre_op == "and"
+    assert res.tracks and {t.artist for t in res.tracks} <= {"Beta", "Gamma"}
+    assert "genre-shoegaze-dream-pop" in res.default_name
+    assert rec.save(res.result_id).exists()

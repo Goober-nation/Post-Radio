@@ -98,16 +98,36 @@ in memory under a `result_id` (for `get()` and `save()`). The CLI does this for 
 it always.
 
 ```python
+from postradio import config
 from postradio.api import Recommender
 
-with Recommender() as rec:                      # reads config.yaml / $POSTRADIO_CONFIG / defaults
-    res = rec.generate(artist="Radiohead", explore=0.7, popularity=0.3, mix={"troi": 1.0})
-    rec.save(res["result_id"])                  # writes JSON to storage.save_dir
-    rec.deep_cuts()                             # {"weeks": [{"week": ..., "tracks": [...]}, ...]}
+with Recommender(config.load("config.yaml"), home="/data/postradio") as rec:   # or Recommender() = defaults
+    pl = rec.generate(artist="Radiohead", explore=0.7, popularity=0.3, mix={"troi": 1.0}, keep=True)
+    rec.save(pl.result_id)                      # writes JSON to <state>/playlists
+    rec.deep_cuts(user="someone")               # DeepCuts: weeks -> tracks
     rec.import_feedback({"loves": {"artists": ["Slowdive"]}})
 ```
 
-`Recommender(cfg, token=, lb_user=, history=, feedback=, offline=, log=)`. Pass `history=` or `feedback=`
+**Result types** (`postradio/results.py`); each has `to_dict()`, which is also what the HTTP API returns:
+- **`Playlist`**, from `generate` and `flow`:
+  - common fields: `kind` (`radio` / `flow`), `tracks`, `explore`, `popularity`, `rng_seed`, `stats`,
+    `result_id` (only when kept), `created_at`, `default_name`, `schema`;
+  - radio adds `seed` (a `Seed`);
+  - flow adds `genre_path`, `profile`, `familiarity` and `flow_score`.
+- **`PlaylistTrack`**, one shape for both:
+  - common fields: `artist`, `title`, `artist_mbid`, `recording_mbid`, `deezer_id`, `popularity`, `score`,
+    `sources`, `familiar`;
+  - radio adds `hop`, `path` and `taste`; flow adds `stop` and `genres`.
+  - Fields that don't apply to a mode are `None` or empty.
+- **Previews and profile:** `GraphPreview` (radio `dry=True`), `FlowPreview` (flow `dry=True`), `Profile`,
+  and `DeepCuts` (weeks of `PlaylistTrack`s).
+- **Stability:** `Playlist.from_dict()` reads the JSON back and ignores unknown keys. New fields may be
+  added; `schema` changes only if an existing field changes meaning.
+- **MBIDs:** flow and radio tracks from Deezer usually have no `recording_mbid`, but `artist_mbid` is set
+  whenever the artist was resolved.
+
+`Recommender(cfg, home=, cache_dir=, data_dir=, state_dir=, token=, lb_user=, history=, feedback=, offline=,
+env=, log=)`. Pass `history=` or `feedback=`
 to plug in any `HistoryProvider` or `FeedbackProvider`, such as a Maloja or multi-scrobbler adapter.
 `flow(explore=, popularity=, n=, per_artist=, stops=, rng_seed=)` and `profile()` run flow mode from the
 configured likes.

@@ -70,7 +70,7 @@ def test_config_rejects_wrong_types_ranges_and_streams(tmp_path):
 def test_api_rejects_n_zero_instead_of_silently_using_default(rec):  # noqa: F811
     with pytest.raises(InvalidInput):
         rec.generate(artist="Seed", n=0)
-    assert len(rec.generate(artist="Seed", n=3)["tracks"]) <= 3
+    assert len(rec.generate(artist="Seed", n=3).tracks) <= 3
 
 
 def test_deezer_memo_is_bounded():

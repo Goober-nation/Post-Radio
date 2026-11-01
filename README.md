@@ -27,14 +27,16 @@ Global flags: `--config path.yaml`, `--no-token`, `--json`, `--offline`. Radio h
 
 ```python
 from postradio.api import Recommender
-rec = Recommender()                                   # config.yaml / $POSTRADIO_CONFIG / defaults
-res = rec.generate(artist="Radiohead", explore=0.7)  # blocking I/O: run in a worker thread
-rec.save(res["result_id"], name=None)                 # default name: <date>_<seed>_e<explore>_p<popularity|auto>
-rec.deep_cuts(user="LOSOSb")                          # {"weeks": [{"week": ..., "tracks": [...]}, ...]}
-rec.list_saved(); rec.load_saved(name); rec.get(result_id)
+with Recommender(home="/data/postradio") as rec:            # one folder for cache/, data/, state/
+    pl = rec.generate(artist="Radiohead", explore=0.7)     # a Playlist; blocking I/O: run in a worker thread
+    for t in pl.tracks:                                    # PlaylistTrack: artist, title, MBIDs, deezer_id, ...
+        print(t.artist, t.title, t.artist_mbid)
+    pl.to_dict()                                           # plain JSON (what the HTTP API sends)
+    rec.flow(explore=0.5, n=30)                            # from the configured likes, no seed
 ```
-Results are held in memory (`storage.result_ttl_s`, `result_cache_size`) until saved; saving writes JSON to
-`storage.save_dir`. `Recommender(history=...)` accepts any `HistoryProvider`, e.g. a Maloja/multi-scrobbler adapter.
+Nothing is stored unless asked (`keep=True` holds a result for `get()` / `save()`), and the library reads no
+environment variables or config files by itself. See [docs/configuration.md](docs/configuration.md) for
+folders, errors and the result types.
 
 HTTP (`postradio serve`): `POST /radio`, `GET /deep-cuts`, `GET /results/{id}`, `POST /results/{id}/save`,
 `GET /saved`, `GET /saved/{name}`.

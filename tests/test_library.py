@@ -1,14 +1,19 @@
-"""Library use: folders, no implicit environment, typed errors, secrets never written down."""
+"""Library use: folders, no implicit environment, typed errors, secrets never written down, typed results."""
+import json
 import os
 from pathlib import Path
 
 import pytest
+from fakes import Resolver, Similar, Tracks
+from test_flow import graph, radio
 
 from postradio import config as config_mod
 from postradio import errors
 from postradio.api import Recommender
-from postradio.models import Artist
+from postradio.engine import Providers, Radio
+from postradio.models import Artist, Feedback
 from postradio.providers.listenbrainz import LBTopTracks
+from postradio.results import FlowPreview, GraphPreview, Playlist, PlaylistTrack, Profile
 
 
 @pytest.fixture
@@ -115,3 +120,54 @@ def test_a_token_is_sent_but_never_written_to_the_cache_or_the_log(elsewhere, mo
         rec.http.db.commit()
     cache = (elsewhere / "h" / "cache" / "http.sqlite").read_bytes()
     assert token.encode() not in cache and not any(token in m for m in logs)
+
+
+# ---------------------------------------------------------------- typed results
+
+
+@pytest.fixture
+def lib(tmp_path):
+    rec = Recommender(home=tmp_path / "home")
+    rec.radio = Radio(Providers(resolver=Resolver(), similar=[Similar()], tracks=[Tracks()]), rec.cfg.advanced,
+                      log=lambda *_: None)
+    yield rec
+    rec.close()
+
+
+def test_radio_and_flow_return_one_typed_shape(lib):
+    r = lib.generate(artist="Seed", n=5, rng_seed=1)
+    assert isinstance(r, Playlist) and r.kind == "radio" and r.rng_seed == 1 and r.seed.artist == "Seed"
+    assert all(isinstance(t, PlaylistTrack) and t.artist_mbid and t.hop is not None and t.stop is None
+               for t in r.tracks)
+    lib.radio = radio([(Feedback("Seed", "Seed song 0", 1.0, "likes"), 100)])
+    lib.genre_graph = graph
+    f = lib.flow(explore=0.5, n=6, stops=3, rng_seed=2)
+    assert isinstance(f, Playlist) and f.kind == "flow" and f.genre_path and f.seed is None
+    assert all(t.stop in f.genre_path and t.hop is None and t.artist_mbid for t in f.tracks)
+    assert isinstance(lib.flow(n=6, stops=3, dry=True), FlowPreview) and isinstance(lib.profile(), Profile)
+
+
+def test_to_dict_is_plain_json_and_reads_back(lib):
+    r = lib.generate(artist="Seed", n=5, rng_seed=1)
+    d = json.loads(json.dumps(r.to_dict()))
+    assert Playlist.from_dict(d) == r and d["schema"] == 1
+    assert set(d["tracks"][0]) == {f for f in PlaylistTrack.__dataclass_fields__}
+    assert Playlist.from_dict({**d, "added_later": 1}) == r  # unknown keys from newer versions are ignored
+
+
+def test_dry_radio_is_a_graph_preview(lib):
+    g = lib.generate(artist="Seed", explore=1, dry=True, rng_seed=3)
+    assert isinstance(g, GraphPreview) and g.rng_seed == 3 and g.hops[1]["top"][0]["artist"] == "Alpha"
+    assert json.loads(json.dumps(g.to_dict()))["dry"] is True
+
+
+def test_http_sends_the_same_shape_as_to_dict(lib):
+    from fastapi.testclient import TestClient
+
+    from postradio.server import create_app
+
+    with TestClient(create_app(lib)) as client:
+        body = client.post("/radio", json={"artist": "Seed", "n": 5, "rng_seed": 1}).json()
+        assert set(body) == set(Playlist.__dataclass_fields__) and body["result_id"]
+        assert Playlist.from_dict(body).tracks == lib.generate(artist="Seed", n=5, rng_seed=1).tracks
+        assert client.post("/radio", json={"artist": "Seed", "dry": True}).json()["dry"] is True

@@ -36,6 +36,7 @@ from .providers.listenbrainz import LBSimilar, LBSimilarRecordings, LBTopTracks,
 from .providers.musicbrainz import MusicBrainz
 from .providers.musicbrainz_store import ArtistStore, GenreIndex
 from .providers.yandex import YandexLikes, YandexSimilar, genre_table
+from .results import DeepCuts, FlowPreview, GraphPreview, Playlist, PlaylistTrack, Profile, Seed, Week
 
 SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -75,9 +76,32 @@ def slug(s: str) -> str:
     return SAFE_NAME.sub("-", s.strip().lower()).strip("-.")[:60] or "playlist"
 
 
-def track_json(t: Track) -> dict:
-    return {"artist": t.artist.name, "title": t.title, "artist_mbid": t.artist.mbid,
-            "recording_mbid": t.recording_mbid, "deezer_id": t.deezer_id}
+def _track(t: Track) -> PlaylistTrack:
+    return PlaylistTrack(t.artist.name, t.title, artist_mbid=t.artist.mbid, recording_mbid=t.recording_mbid,
+                         deezer_id=t.deezer_id)
+
+
+def _radio_playlist(res: dict, rng_seed: int) -> Playlist:
+    tracks = [PlaylistTrack(r["artist"], r["title"], artist_mbid=r.get("artist_mbid"),
+                            recording_mbid=r.get("recording_mbid"), deezer_id=r.get("deezer_id"),
+                            popularity=r.get("popularity"), score=r.get("score"), sources=r.get("sources") or [],
+                            familiar=bool(r.get("known_artist")), hop=r.get("hop"), path=r.get("path"),
+                            taste=r.get("taste")) for r in res["tracks"]]
+    s = res["seed"]
+    seed = Seed(s["artist"], s["artist_mbid"], s["track"], s.get("popularity"), res.get("genres"), res.get("genre_op"))
+    stats = {k: res.get(k) for k in ("mode", "mix", "unheard", "graph_size", "candidates")}
+    return Playlist("radio", tracks, res["explore"], res["popularity"], rng_seed, seed=seed, stats=stats)
+
+
+def _flow_playlist(res: dict, rng_seed: int) -> Playlist:
+    tracks = [PlaylistTrack(r["artist"], r["title"], artist_mbid=r.get("artist_mbid"),
+                            recording_mbid=r.get("recording_mbid"), deezer_id=r.get("deezer_id"),
+                            popularity=r.get("popularity"), score=r.get("score"), sources=r.get("sources") or [],
+                            familiar=bool(r.get("familiar")), genres=r.get("genres") or [], stop=r.get("stop"))
+              for r in res["tracks"]]
+    stats = {"stops": res.get("stops"), "candidates": res.get("candidates"), "graph_learned": res.get("graph_learned")}
+    return Playlist("flow", tracks, res["explore"], res["popularity"], rng_seed, genre_path=res["path"],
+                    profile=res["profile"], familiarity=res["familiarity"], flow_score=res["flow_score"], stats=stats)
 
 
 class Recommender:
@@ -203,7 +227,7 @@ class Recommender:
                  explore: float | None = None, popularity: float | None = None, n: int | None = None,
                  per_artist: int | None = None, rng_seed: int | None = None, auto_popularity: bool = False,
                  unheard: str | None = None, mix: dict[str, float] | None = None, dry: bool = False,
-                 keep: bool = False) -> dict:
+                 keep: bool = False) -> Playlist | GraphPreview:
         """Unset knobs fall back to config defaults. auto_popularity=True ignores a configured default
         popularity so it follows explore. Without rng_seed a seed is picked and reported (`rng_seed` in the
         result), so any run can be repeated. dry=True previews the artist graph without picking tracks."""
@@ -224,13 +248,15 @@ class Recommender:
         res = self.radio.generate(p, dry=dry, artist=artist, track=track, artist_mbid=artist_mbid,
                                   recording_mbid=recording_mbid, genres=genres, genre_op=genre_op)
         if dry:
-            return res
-        res["rng_seed"] = rng_seed
-        return self._remember("radio", res, self._radio_name(res), keep)
+            return GraphPreview(rng_seed, Seed(**{k: v for k, v in res["seed"].items() if k != "popularity"},
+                                               genres=res["genres"]),
+                                res["explore"], res["popularity"], res["mode"], res["max_hops"], res["target_hop"],
+                                res["popularity_target"], res["graph_size"], res["hops"])
+        return self._remember(_radio_playlist(res, rng_seed), self._radio_name(res), keep)
 
     def flow(self, *, explore: float | None = None, popularity: float | None = None, n: int | None = None,
              per_artist: int | None = None, stops: int = 5, rng_seed: int | None = None, dry: bool = False,
-             keep: bool = False) -> dict:
+             keep: bool = False) -> Playlist | FlowPreview:
         """A playlist from the user's own likes, no seed: a path of genre stops through the genre graph (explore =
         how far from their genres), filled with familiar and new artists. Needs likes (Yandex playlist,
         Navidrome stars, LB loves or imported loves). Without rng_seed a seed is picked and reported, so the
@@ -248,17 +274,18 @@ class Recommender:
                 raise InvalidInput(f"{name} must be in [0, 1]")
         res = self.radio.flow(p, self.genre_graph(), dry=dry)
         if dry:
-            return res
-        res["rng_seed"] = rng_seed
+            return FlowPreview(rng_seed, res["path"], res["explore"], res["popularity"], res["stops"],
+                               res["tracks_per_stop"], res["familiarity"], res["graph_learned"], res["profile"],
+                               res["nearby"])
         pop = "auto" if p.popularity is None else f"{p.popularity:.2f}"
         name = f"{datetime.now(UTC):%Y-%m-%d}_flow_e{p.explore:.2f}_p{pop}"
-        return self._remember("flow", res, name, keep)
+        return self._remember(_flow_playlist(res, rng_seed), name, keep)
 
-    def profile(self) -> dict:
+    def profile(self) -> Profile:
         """The taste profile flow mode would use: the user's genres and their nearest neighbours."""
         _, _, _, profile, spread = self.radio.profile(self.genre_graph())
-        return {"profile": [{"genre": g, "share": s} for g, s in profile.items()],
-                "nearby": [{"genre": s.genre, "score": s.score, "hop": s.hop} for s in spread if s.hop > 0][:20]}
+        return Profile([{"genre": g, "share": s} for g, s in profile.items()],
+                       [{"genre": s.genre, "score": s.score, "hop": s.hop} for s in spread if s.hop > 0][:20])
 
     def _mix(self, overrides: dict[str, float] | None) -> dict[str, float]:
         """advanced.mix stream caps with per-run overrides. Keys: deezer-top, lb, deezer-radio, troi,
@@ -293,7 +320,7 @@ class Recommender:
         return f"{datetime.now(UTC):%Y-%m-%d}_{slug(seed)}_e{res['explore']:.2f}_p{pop}"
 
     # ------------------------------------------------------------------ LB created-for
-    def deep_cuts(self, user: str | None = None, kind: str = "exploration", keep: bool = False) -> dict:
+    def deep_cuts(self, user: str | None = None, kind: str = "exploration", keep: bool = False) -> DeepCuts:
         """LB's own Weekly Exploration ('deep cuts') or Weekly Jams; each week a separate entry."""
         user = user or self.lb_user
         if not user:
@@ -301,12 +328,10 @@ class Recommender:
         if kind not in KINDS:
             raise InvalidInput(f"kind must be one of {sorted(KINDS)}")
         weeks = self.created_for.playlists(user, KINDS[kind])
-        res = {"kind": KINDS[kind], "user": user, "weeks": [
-            {"week": w.week, "title": w.title, "playlist_mbid": w.mbid,
-             "url": f"https://listenbrainz.org/playlist/{w.mbid}", "tracks": [track_json(t) for t in w.tracks]}
-            for w in weeks]}
+        res = DeepCuts(KINDS[kind], user, [Week(w.week, w.title, w.mbid, f"https://listenbrainz.org/playlist/{w.mbid}",
+                                                [_track(t) for t in w.tracks]) for w in weeks])
         name = f"{datetime.now(UTC):%Y-%m-%d}_lb-{kind}_{slug(user)}"
-        return self._remember("lb-created-for", res, name, keep)
+        return self._remember(res, name, keep)
 
     # ------------------------------------------------------------------ feedback store
     def import_feedback(self, data: dict) -> dict:
@@ -317,17 +342,16 @@ class Recommender:
         return self.feedback_store.batches()
 
     # ------------------------------------------------------------------ cache & storage
-    def _remember(self, kind: str, res: dict, default_name: str, keep: bool) -> dict:
+    def _remember(self, res, default_name: str, keep: bool):
         """keep=True holds the result in memory under a result_id (for get() and save()); otherwise nothing
         is stored and result_id is None."""
-        rid = uuid.uuid4().hex[:12] if keep else None
-        out = {"result_id": rid, "type": kind, "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
-               "default_name": default_name, **res}
+        res.result_id = uuid.uuid4().hex[:12] if keep else None
+        res.created_at, res.default_name = datetime.now(UTC).isoformat(timespec="seconds"), default_name
         if keep:
-            self.cache.put(rid, out)
-        return out
+            self.cache.put(res.result_id, res)
+        return res
 
-    def get(self, result_id: str) -> dict | None:
+    def get(self, result_id: str) -> Playlist | DeepCuts | None:
         return self.cache.get(result_id)
 
     @property
@@ -350,12 +374,12 @@ class Recommender:
         res = self.get(result_id)
         if res is None:
             raise NotFound(f"result {result_id} expired or unknown (kept {self.cfg.storage.result_ttl_s}s)")
-        path = self.save_dir / f"{slug(name) if name else res['default_name']}.json"
+        path = self.save_dir / f"{slug(name) if name else res.default_name}.json"
         if path.exists() and not overwrite:
             raise FileExistsError(path)
         self.save_dir.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps({**res, "saved_as": path.stem}, indent=2, ensure_ascii=False))
+        tmp.write_text(json.dumps({**res.to_dict(), "saved_as": path.stem}, indent=2, ensure_ascii=False))
         tmp.replace(path)
         return path
 
@@ -367,10 +391,12 @@ class Recommender:
             except (OSError, json.JSONDecodeError):
                 continue
             n = len(d.get("tracks") or []) or sum(len(w["tracks"]) for w in d.get("weeks") or [])
-            out.append({"name": p.stem, "type": d.get("type"), "created_at": d.get("created_at"), "tracks": n})
+            out.append({"name": p.stem, "type": d.get("kind") or d.get("type"), "created_at": d.get("created_at"),
+                        "tracks": n})
         return out
 
     def load_saved(self, name: str) -> dict:
+        """The saved JSON (Playlist.from_dict(...) turns a radio/flow one back into a Playlist)."""
         p = self.save_dir / f"{slug(name)}.json"
         if not p.exists():
             raise NotFound(f"no saved playlist '{name}'")

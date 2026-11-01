@@ -78,6 +78,6 @@ def test_api_import_feedback_lands_in_save_dir_and_feeds_taste(rec):  # noqa: F8
     out = rec.import_feedback({"hates": {"artists": ["Alpha"]}})
     assert rec.feedback_store.path.parent.parent == rec.save_dir and out["items"] == 1
     res = rec.generate(artist="Seed", n=10)
-    assert all(t["taste"]["artist"] < 0 for t in res["tracks"] if t["artist"] == "Alpha")
+    assert all(t.taste["artist"] < 0 for t in res.tracks if t.artist == "Alpha")
     assert json.loads(rec.feedback_store.path.read_text().splitlines()[0])["kind"] == "artist"
     assert NAMES  # fakes import used

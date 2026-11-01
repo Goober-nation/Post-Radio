@@ -111,28 +111,28 @@ def create_app(rec: Recommender | None = None) -> FastAPI:
         if sum(x is not None for x in seeds) != 1:
             raise HTTPException(422, "give exactly one of artist, track, artist_mbid, recording_mbid, genres")
         try:
-            return rec.generate(**req.model_dump(), keep=not req.dry)
+            return rec.generate(**req.model_dump(), keep=not req.dry).to_dict()
         except PostRadioError as e:
             raise http_error(e) from e
 
     @app.post("/flow")
     def flow(req: FlowRequest):
         try:
-            return rec.flow(**req.model_dump(), keep=not req.dry)
+            return rec.flow(**req.model_dump(), keep=not req.dry).to_dict()
         except PostRadioError as e:
             raise http_error(e) from e
 
     @app.get("/profile")
     def profile():
         try:
-            return rec.profile()
+            return rec.profile().to_dict()
         except PostRadioError as e:
             raise http_error(e) from e
 
     @app.get("/deep-cuts")
     def deep_cuts(user: str | None = None, kind: str = "exploration"):
         try:
-            return rec.deep_cuts(user, kind, keep=True)
+            return rec.deep_cuts(user, kind, keep=True).to_dict()
         except PostRadioError as e:
             raise http_error(e) from e
 
@@ -141,7 +141,7 @@ def create_app(rec: Recommender | None = None) -> FastAPI:
         res = rec.get(result_id)
         if res is None:
             raise HTTPException(404, "expired or unknown result")
-        return res
+        return res.to_dict()
 
     @app.post("/results/{result_id}/save")
     def save(result_id: str, req: SaveRequest):

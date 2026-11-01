@@ -615,7 +615,8 @@ class Radio:
     @staticmethod
     def _row(s: float, t: Track, n: Node, g: Graph, history: History, taste: Taste, boost: float) -> dict:
         return {
-            "artist": t.artist.name, "title": t.title, "score": round(s, 4), "hop": n.hop,
+            "artist": t.artist.name, "title": t.title, "artist_mbid": t.artist.mbid or n.artist.mbid,
+            "score": round(s, 4), "hop": n.hop,
             "popularity": round(t.popularity, 2), "artist_popularity": n.artist.popularity,
             "sources": sorted(t.sources), "recording_mbid": t.recording_mbid, "deezer_id": t.deezer_id,
             "path": g.path(n), "via": sorted(n.via), "known_artist": bool(history.plays(n.artist)),
@@ -715,7 +716,7 @@ class Radio:
                     s = pop_fit(t.popularity, p) * artist_pop_fit(t.artist.popularity or ar.popularity, p)
                     s *= self.taste_factor(taste.artist(ar)) * self.taste_factor(taste.track(t))
                     s *= 1 - a.jitter / 2 + a.jitter * rng.random()
-                    scored.append(flow_mod.Pick(t, gs or [g], familiar, s))
+                    scored.append(flow_mod.Pick(t, gs or [g], familiar, s, extra={"artist_mbid": ar.mbid}))
                 picks += sorted(scored, key=lambda c: -c.score)[: a.flow_tracks_per_artist]
             pools[g] = picks
         stops = flow_mod.fill(path, pools, counts, p.explore, p.per_artist)
@@ -728,7 +729,9 @@ class Radio:
             "flow_score": flow_mod.flow_score(tracks, graph.adj),
             "graph_learned": graph.learned,
             "candidates": sum(len(v) for v in pools.values()),
-            "tracks": [{"artist": c.artist, "title": c.title, "stop": c.stop, "genres": c.genres[:3],
+            "tracks": [{"artist": c.artist, "title": c.title,
+                        "artist_mbid": c.track.artist.mbid or c.extra.get("artist_mbid"),
+                        "stop": c.stop, "genres": c.genres[:3],
                         "familiar": c.familiar, "score": round(c.score, 4),
                         "popularity": round(c.track.popularity, 2), "sources": sorted(c.track.sources),
                         "recording_mbid": c.track.recording_mbid, "deezer_id": c.track.deezer_id} for c in tracks],

@@ -11,6 +11,7 @@ from postradio import config as config_mod
 from postradio.api import Recommender, ResultCache, slug
 from postradio.engine import Providers, Radio
 from postradio.errors import NotFound
+from postradio.results import Playlist
 from postradio.server import create_app
 
 
@@ -58,19 +59,19 @@ def test_result_cache_ttl_and_lru(monkeypatch):
 
 
 def test_generate_uses_config_defaults_and_save_roundtrip(rec):
-    assert rec.generate(artist="Seed")["result_id"] is None  # nothing stored unless asked
+    assert rec.generate(artist="Seed").result_id is None  # nothing stored unless asked
     res = rec.generate(artist="Seed", keep=True)
-    assert len(res["tracks"]) <= rec.cfg.defaults.n and res["explore"] == rec.cfg.defaults.explore
-    assert rec.get(res["result_id"]) is res
-    assert "_seed_e0.50_pauto" in res["default_name"]
-    p = rec.save(res["result_id"])
-    assert p.stem == res["default_name"] and p.parent == rec.save_dir
-    named = rec.save(res["result_id"], "My Fav/../x")
+    assert len(res.tracks) <= rec.cfg.defaults.n and res.explore == rec.cfg.defaults.explore
+    assert rec.get(res.result_id) is res
+    assert "_seed_e0.50_pauto" in res.default_name
+    p = rec.save(res.result_id)
+    assert p.stem == res.default_name and p.parent == rec.save_dir
+    named = rec.save(res.result_id, "My Fav/../x")
     assert named.parent == rec.save_dir and named.stem == "my-fav-..-x"
     with pytest.raises(FileExistsError):
-        rec.save(res["result_id"], "My Fav/../x")
+        rec.save(res.result_id, "My Fav/../x")
     assert {s["name"] for s in rec.list_saved()} == {p.stem, named.stem}
-    assert rec.load_saved(p.stem)["tracks"] == res["tracks"]
+    assert Playlist.from_dict(rec.load_saved(p.stem)) == res  # the saved JSON reads back into the same object
     with pytest.raises(NotFound):
         rec.save("nope")
 

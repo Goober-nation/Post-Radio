@@ -150,6 +150,19 @@ How Post-Vinyl (`rebuild/base`) handles ListenBrainz tokens, and what follows fo
 - **User action:** the repo's `./config.yaml` is still found by the CLI when run from the repo root.
   Relative paths in it now resolve against its own folder (the repo), as before.
 
+### Step 2 done: typed results
+
+- `postradio/results.py`: `Playlist`, `PlaylistTrack` (one shape for radio and flow), `Seed`, `DeepCuts`,
+  `Week`, `GraphPreview`, `FlowPreview`, `Profile`. Each has `to_dict()`; `Playlist.from_dict()` ignores
+  unknown keys; `schema` = 1.
+- Tracks now carry `artist_mbid`, which was missing from both engines' rows before.
+- The CLI and server convert at the edge (`to_dict()`). Saved files are `Playlist.to_dict()` plus
+  `saved_as`.
+- Tests: one shape for radio and flow, a JSON round trip, the dry radio preview, and HTTP sending the same
+  keys as `to_dict()`.
+- Not done yet: recording MBIDs for Deezer tracks. That needs a per-track lookup (LB name lookup with a token,
+  or MusicBrainz at 1/s), to decide with step 3.
+
 ## Dry runs and seeds (user request, 2026-11-01)
 
 - `radio --dry`: the seed and the artist graph by hop, no tracks. `flow --dry`: the profile and the genre

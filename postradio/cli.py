@@ -213,7 +213,7 @@ def main(argv=None):
         print(json.dumps(out, indent=2, ensure_ascii=False))
         return
     if a.cmd == "profile":
-        out = rec.profile()
+        out = rec.profile().to_dict()
         if a.json:
             print(json.dumps(out, indent=2, ensure_ascii=False))
         else:
@@ -226,10 +226,10 @@ def main(argv=None):
         return
     if a.cmd == "flow":
         res = rec.flow(explore=a.explore, popularity=a.popularity, n=a.n, per_artist=a.per_artist,
-                       stops=a.stops, rng_seed=a.rng_seed, dry=a.dry, keep=a.save is not None)
+                       stops=a.stops, rng_seed=a.rng_seed, dry=a.dry, keep=a.save is not None).to_dict()
         if a.dry and not a.json:
             log(f"rng seed: {res['rng_seed']} (repeat with --rng-seed {res['rng_seed']})")
-            print(f"path: {' -> '.join(res['path'])}")
+            print(f"path: {' -> '.join(res['genre_path'])}")
             print(f"tracks per stop: {res['tracks_per_stop']}  familiarity {res['familiarity']}  "
                   f"explore {res['explore']}  learned weights: {res['graph_learned']}")
             print("your genres: " + ", ".join(f"{x['genre']} {x['share']:.2f}" for x in res["profile"][:10]))
@@ -238,7 +238,7 @@ def main(argv=None):
             print(json.dumps(res, indent=2, ensure_ascii=False))
         else:
             log(f"rng seed: {res['rng_seed']}")
-            log(f"path: {' -> '.join(res['path'])} (familiarity {res['familiarity']}, flow {res['flow_score']})")
+            log(f"path: {' -> '.join(res['genre_path'])} (familiarity {res['familiarity']}, flow {res['flow_score']})")
             for i, t in enumerate(res["tracks"], 1):
                 mark = "*" if t["familiar"] else " "
                 print(f"{i:>3} [{t['stop']}] p{t['popularity']:.2f}{mark} {t['artist']} — {t['title']}")
@@ -256,13 +256,13 @@ def main(argv=None):
                            genres=genres, genre_op=a.genre_op, unheard=a.unheard, explore=a.explore,
                            popularity=a.popularity, n=a.n, per_artist=a.per_artist, rng_seed=a.rng_seed,
                            auto_popularity=a.auto_popularity, mix=_parse_mix(a.mix), dry=a.dry,
-                           keep=a.save is not None)
+                           keep=a.save is not None).to_dict()
         if a.dry:
             if a.json:
                 print(json.dumps(res, indent=2, ensure_ascii=False))
                 return
             log(f"rng seed: {res['rng_seed']} (repeat with --rng-seed {res['rng_seed']})")
-            seed = res["seed"]["artist"] or "genres: " + ", ".join(res["genres"] or [])
+            seed = res["seed"]["artist"] or "genres: " + ", ".join(res["seed"]["genres"] or [])
             print(f"seed: {seed}  mode {res['mode']}  max hops {res['max_hops']}  target hop {res['target_hop']}  "
                   f"popularity target {res['popularity_target']}  graph {res['graph_size']} artists")
             for h, info in res["hops"].items():
@@ -270,16 +270,16 @@ def main(argv=None):
                     f"{x['artist']} [{'/'.join(x['via'])}]" for x in info["top"]))
             return
     else:
-        res = rec.deep_cuts(a.user, a.kind, keep=a.save is not None)
+        res = rec.deep_cuts(a.user, a.kind, keep=a.save is not None).to_dict()
 
     if a.json:
         print(json.dumps(res, indent=2, ensure_ascii=False))
     elif a.cmd == "radio":
         log(f"rng seed: {res['rng_seed']}")
-        log(f"{len(res['tracks'])} tracks from {res['candidates']} candidates, "
+        log(f"{len(res['tracks'])} tracks from {res['stats']['candidates']} candidates, "
             f"{rec.http.calls} network calls, {rec.http.failures} failed")
         for i, t in enumerate(res["tracks"], 1):
-            mark = "*" if t["known_artist"] else " "
+            mark = "*" if t["familiar"] else " "
             print(f"{i:>3} h{t['hop']} p{t['popularity']:.2f}{mark} {t['artist']} — {t['title']}  "
                   f"[{','.join(t['sources'])}]")
     else:
