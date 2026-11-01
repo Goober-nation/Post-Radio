@@ -107,6 +107,19 @@ def parser() -> argparse.ArgumentParser:
     s = sub.add_parser("saved", help="list saved playlists, or print one")
     s.add_argument("name", nargs="?")
 
+    dt = sub.add_parser("data", help="optional data in storage.data_dir: artist store, genre weights")
+    dts = dt.add_subparsers(dest="data_cmd", required=True)
+    db = dts.add_parser("build", help="build the data files and package a data-YYYY-MM release folder")
+    db.add_argument("--out", default="dist", help="release folder parent (default: dist)")
+    db.add_argument("--skip", default="", help="comma list of steps to skip: graph, dump, weights")
+    db.add_argument("--keep-dump", action="store_true", help="keep the downloaded artist.tar.xz")
+    db.add_argument("--seeds", type=int, default=1000, help="LB sitewide top artists for the weights (1000)")
+    db.add_argument("--similar", type=int, default=10, help="similar artists per seed (10)")
+    df = dts.add_parser("fetch", help="install the newest data release (verified against its manifest)")
+    df.add_argument("--tag", help="a specific data-YYYY-MM release")
+    df.add_argument("--no-store", action="store_true", help="skip the ~600 MB artist store; genre files only")
+    dts.add_parser("status", help="show what is installed")
+
     sv = sub.add_parser("serve", help="run the HTTP API")
     sv.add_argument("--host")
     sv.add_argument("--port", type=int)
@@ -149,6 +162,18 @@ def main(argv=None):
             out = rec.import_feedback(json.loads(raw))
         else:
             out = rec.feedback_batches()
+        print(json.dumps(out, indent=2, ensure_ascii=False))
+        return
+    if a.cmd == "data":
+        progress = lambda m: print(f"# {m}", file=sys.stderr, flush=True)  # noqa: E731 - builds are long
+        rec.log = progress
+        if a.data_cmd == "build":
+            steps = [s.strip() for s in a.skip.split(",") if s.strip()]
+            out = {"release_dir": str(rec.data_build(a.out, steps, a.keep_dump, a.seeds, a.similar))}
+        elif a.data_cmd == "fetch":
+            out = rec.data_fetch(a.tag, store=not a.no_store)
+        else:
+            out = rec.data_status()
         print(json.dumps(out, indent=2, ensure_ascii=False))
         return
     if a.cmd == "saved":

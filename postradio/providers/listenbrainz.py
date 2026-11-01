@@ -59,6 +59,48 @@ class LBSimilar(SimilarArtists):
         return [Edge(Artist(name, mbid=mbid), 0.5 + 0.5 * sc / top, self.name) for mbid, name, sc in rows]
 
 
+class LBData:
+    """Data-build reads (no interface, called by postradio/data.py): sitewide top artists as seeds, and artists'
+    MusicBrainz genres in batches. Similar-artist pairs come from LBSimilar.neighbours."""
+
+    def __init__(self, http: Http):
+        self.http = http
+
+    def sitewide_artists(self, n: int) -> list[Artist]:
+        """All-time most-listened artists with an MBID. The API stops at about 1000."""
+        out: list[Artist] = []
+        for offset in range(0, max(n, 0) * 2, 100):  # rows without an MBID are skipped, so allow extra pages
+            d = self.http.get(f"{API}/stats/sitewide/artists", params={"range": "all_time", "count": 100,
+                                                                       "offset": offset})
+            rows = ((d or {}).get("payload") or {}).get("artists")
+            if not rows:
+                break
+            out += parse_rows(rows, lambda a: Artist(a["artist_name"], mbid=a["artist_mbid"])
+                              if a.get("artist_mbid") and a["artist_name"] else None)
+            if len(out) >= n:
+                break
+        return out[:n]
+
+    def artist_genres(self, mbids: list[str], top: int = 5) -> dict[str, list[str]]:
+        """{mbid: its `top` MusicBrainz genres by votes} (tags that carry a genre MBID), 50 artists per call.
+        Every asked MBID gets an entry, empty when LB knows no genres for it."""
+        out: dict[str, list[str]] = {m: [] for m in mbids}
+        for i in range(0, len(mbids), 50):
+            batch = mbids[i:i + 50]
+            d = self.http.get(f"{API}/metadata/artist/", params={"artist_mbids": ",".join(batch), "inc": "tag"},
+                              timeout=60)
+
+            def genres(a: dict) -> tuple[str, list[str]]:
+                tags = parse_rows((a.get("tag") or {}).get("artist"), lambda t: (int(t.get("count") or 0), t["tag"])
+                                  if t.get("genre_mbid") and t["tag"] else None)
+                return a["artist_mbid"], [t for c, t in sorted(tags, key=lambda x: (-x[0], x[1])) if c > 0][:top]
+
+            for mbid, gs in parse_rows(d, genres):
+                if mbid in out:
+                    out[mbid] = gs
+        return out
+
+
 class LBSimilarRecordings(TrackSimilarity):
     """Track-to-track similarity from LB listening sessions. Tokenless."""
 

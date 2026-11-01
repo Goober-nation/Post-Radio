@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from . import config as config_mod
+from . import data as data_mod
 from .engine import Params, Providers, Radio
 from .errors import InvalidInput
 from .genres import GenreGraph
@@ -293,6 +294,25 @@ class Recommender:
         if not p.exists():
             raise FileNotFoundError(p)
         return json.loads(p.read_text())
+
+    # ------------------------------------------------------------------ optional data (storage.data_dir)
+    def data_build(self, out_dir: str | Path = "dist", skip: list[str] | None = None, keep_dump: bool = False,
+                   seeds: int = 1000, similar: int = 10) -> Path:
+        """Build the data files into data_dir and package a release folder under out_dir (see data.py).
+        Takes roughly 30 min and ~3 GB of free disk with every step."""
+        opts = data_mod.BuildOptions(skip=frozenset(skip or ()), keep_dump=keep_dump, seeds=seeds, similar=similar)
+        mb = MusicBrainz(self.http)  # no store: the build replaces it
+        return data_mod.build(self.http, mb, self.data_dir, Path(out_dir), opts, log=self.log)
+
+    def data_fetch(self, tag: str | None = None, store: bool = True) -> dict:
+        """Install the newest (or `tag`) data release into data_dir, verified against its manifest."""
+        if self.store:
+            self.store.close()  # the file is replaced; reopened on the next Recommender
+            self.store = None
+        return data_mod.fetch(self.http, self.data_dir, tag, store=store, log=self.log)
+
+    def data_status(self) -> dict:
+        return data_mod.status(self.data_dir)
 
     def close(self) -> None:
         """Release worker threads (and the cache connection). Use per-request Recommenders as `with` blocks."""

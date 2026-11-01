@@ -21,6 +21,7 @@ from typing import NamedTuple
 
 PACKAGED_GRAPH = Path(__file__).resolve().parent / "data" / "genre_graph.json"
 WEIGHTS_FILE = "genre_weights.json"  # in storage.data_dir
+GRAPH_FILE = "genre_graph.json"  # in storage.data_dir: overrides the packaged graph when installed
 
 Pair = tuple[str, str]
 Adjacency = dict[str, dict[str, float]]
@@ -185,7 +186,10 @@ class GenreGraph:
              graph_path: Path = PACKAGED_GRAPH, yandex: dict | None = None) -> "GenreGraph":
         """The packaged Wikidata graph, plus `yandex` tree edges when given. With `data_dir/genre_weights.json`
         present the learned weights rank and structure fills in at `fallback_scale`; otherwise the structural
-        graph is used as is. Cached per file version, so repeated loads are free."""
+        graph is used as is. A `data_dir/genre_graph.json` (installed with the store it was built against) wins
+        over the packaged graph. Cached per file version, so repeated loads are free."""
+        if data_dir and graph_path == PACKAGED_GRAPH and (data_dir / GRAPH_FILE).is_file():
+            graph_path = data_dir / GRAPH_FILE
         weights = data_dir / WEIGHTS_FILE if data_dir else None
         w_stamp = _stamp(weights) if weights else None
         y_key = json.dumps(yandex, sort_keys=True) if yandex else None

@@ -78,8 +78,29 @@ flowchart TB
   - Without the store, the small `genre_artists.json` index serves `genre_artists()` instead.
   - With neither file, behaviour is exactly as before.
 - The Wikidata graph is built by `providers/wikidata.py` from three SPARQL queries: ancestors, labels and
-  influences. Collapsing Wikidata-only steps is part of that adapter. The data build and fetch commands
-  that produce and install these files come in a later change.
+  influences. Collapsing Wikidata-only steps is part of that adapter.
+- A `genre_graph.json` in `data_dir` (installed with the store it was built against) wins over the
+  packaged graph.
+
+## Data build and fetch (`postradio/data.py`)
+
+`postradio data build` writes into `data_dir`, then packages `dist/data-YYYY-MM/`. Every download goes
+through `Http`; big files use `Http.download`, which streams to disk, resumes and never caches.
+
+1. **graph:** `MusicBrainz.genre_names()` then `Wikidata.genre_graph()`, written to `genre_graph.json`.
+2. **dump:** the latest MusicBrainz JSON `artist.tar.xz` (~1.7 GB) is imported into `mb_artists.sqlite`,
+   then indexed into `genre_artists.json` (300 artists per genre). The dump is deleted afterwards unless
+   `--keep-dump`. The dump date is recorded in `build.json`.
+3. **weights:** seeds are ListenBrainz sitewide top artists (`LBData.sitewide_artists`); pairs are each
+   seed's `LBSimilar` neighbours; genres are every involved artist's top 5 MusicBrainz genres
+   (`LBData.artist_genres`). The result is co-tag NPMI and similar-artist layers in `genre_weights.json`.
+4. **package:** the files plus the compressed store, the CC BY-NC-SA text, `manifest.json` (size, sha256
+   and licence per file, plus the dump date) and `RELEASE.md`. Upload it by hand as a pre-release; the
+   command prints the `gh release create` line.
+
+`--skip graph,dump,weights` reuses what's already in `data_dir`. `postradio data fetch [--tag]
+[--no-store]` installs the newest `data-*` pre-release of `brand.DATA_RELEASE_REPO`. Every file is checked
+against the manifest before anything is installed. `postradio data status` shows what's installed.
 
 ## Scoring
 

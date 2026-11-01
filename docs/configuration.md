@@ -13,6 +13,9 @@ of a traceback.
 | `feedback import FILE\|-` | Append a dated loves/hates batch |
 | `feedback batches` | List imported batches with dates |
 | `saved [name]` | List saved playlists, or print one |
+| `data build` | `--out` (dist) · `--skip graph,dump,weights` · `--keep-dump` · `--seeds` (1000) · `--similar` (10). Builds into `storage.data_dir` and packages `dist/data-YYYY-MM/`. All steps take about 30 min and ~3 GB of disk. |
+| `data fetch` | `--tag data-YYYY-MM` (newest) · `--no-store` (genre files only). Verifies against `manifest.json`, then installs into `storage.data_dir`. |
+| `data status` | Shows the files in `storage.data_dir`, the installed release and the last build |
 | `serve` | `--host` (127.0.0.1) · `--port` (8765) |
 
 Environment variables: `LISTENBRAINZ_TOKEN`, `LISTENBRAINZ_USERNAME`, `POSTRADIO_CONFIG`, `NAVIDROME_URL`,
@@ -45,6 +48,8 @@ with Recommender() as rec:                      # reads config.yaml / $POSTRADIO
 
 `Recommender(cfg, token=, lb_user=, history=, feedback=, offline=, log=)`. Pass `history=` or `feedback=`
 to plug in any `HistoryProvider` or `FeedbackProvider`, such as a Maloja or multi-scrobbler adapter.
+`data_build(out_dir, skip, keep_dump, seeds, similar)`, `data_fetch(tag, store)` and `data_status()`
+manage the optional files in `storage.data_dir`. `genre_graph()` returns the loaded `GenreGraph`.
 `with_config(...)` returns a modified copy; use it in a `with` block so its worker threads are released.
 
 ## config.yaml: user settings

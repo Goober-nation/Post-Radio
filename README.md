@@ -100,7 +100,9 @@ the package). Learned genre-pair weights rank it when they are installed. Option
 - `genre_weights.json`: the learned genre-pair weights.
 - `genre_artists.json`: a small genre → artists index for users without the store.
 
-These files are CC BY-NC-SA 3.0 (MusicBrainz genre data). Without them, nothing changes. See
+Install them with `postradio data fetch` (the newest `data-YYYY-MM` pre-release, about 250 MB download)
+or build them with `postradio data build` (about 30 min, ~3 GB of disk; `--skip dump` leaves out the
+store). `postradio data status` shows what's installed. These files are CC BY-NC-SA 3.0 (MusicBrainz genre data). Without them, nothing changes. See
 [postradio/data/README.md](postradio/data/README.md) for the licences.
 
 ## Licence

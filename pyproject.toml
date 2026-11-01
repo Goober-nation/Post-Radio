@@ -29,4 +29,4 @@ version = { attr = "postradio.brand.VERSION" }  # single source: postradio/brand
 include = ["postradio*"]
 
 [tool.setuptools.package-data]
-postradio = ["data/*.json", "data/*.md"]
+postradio = ["data/*.json", "data/*.md", "data/*.txt"]

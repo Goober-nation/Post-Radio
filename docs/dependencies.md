@@ -26,6 +26,8 @@ flowchart TB
     api --> p_mbs[providers.musicbrainz_store]
     p_mb --> p_mbs
     p_wd[providers.wikidata] --> http
+    api --> data
+    data --> p_wd & p_mb & p_mbs & p_lb & genres & http
     engine --> providers
     engine --> models
     engine --> config
@@ -45,6 +47,8 @@ flowchart TB
 | `MusicBrainz` | `musicbrainz.org/ws/2`: artist search/lookup, recording, release-group, artist-rels, tags | none | **1 req/s**: 1.1 s spacing, 1 request in flight, 5 attempts, backoff 2–30 s on 503/429 (nothing after the last attempt). About 4 calls per cold run. |
 | `ArtistStore` (optional) | local `mb_artists.sqlite`, built from `data.metabrainz.org` JSON dump `artist.tar.xz` (~1.7 GB) | none | No network at run time; opened read-only. About 600 MB on disk. |
 | `Wikidata` | `query.wikidata.org/sparql`: three SPARQL queries (ancestors, labels, influences) | none | Data build only. 1 req/s, 1 in flight, 180 s timeout. Each query must stay under Wikidata's 60 s limit, or the answer comes back cut off mid-JSON; `Http` retries a body it can't parse. |
+| `LBData` | `api.listenbrainz.org/1/stats/sitewide/artists`, `/1/metadata/artist/?inc=tag` | none | Data build only. About 10 seed pages plus about 40 metadata batches. Similar pairs reuse `LBSimilar`. |
+| `data.fetch` | `api.github.com/repos/{DATA_RELEASE_REPO}/releases`, then asset downloads | none | The release listing is cached for 10 min. Assets are streamed to disk and checked by sha256. |
 | `Deezer` | `api.deezer.com`: `/search/artist`, `/artist/{id}/top`, `/related`, `/radio`, `/genre`, `/genre/{id}/artists` | none | 0.12 s spacing, 6 in flight. The quota error (code 4) is retried; "no data" (code 800) is cached as an answer; any other error body is returned uncached. |
 | `LBSimilar` | `labs.api.listenbrainz.org/similar-artists/json` | none | 0.1 s spacing, 4 in flight |
 | `LBTopTracks` | `api.listenbrainz.org/1/popularity/top-recordings-for-artist` | **token** | Wired in only when a token is set. It is the authoritative artist popularity. |

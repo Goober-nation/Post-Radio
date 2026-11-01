@@ -204,6 +204,46 @@ class Http:
         return self.request("GET", url, params=params, headers=headers, shape=shape, max_age=max_age,
                             cache_params=cache_params, valid=valid, timeout=timeout)
 
+    def text(self, url: str, timeout: float = 30) -> str | None:
+        """Small uncached text resource (e.g. a LATEST marker): per-host spacing, no retries."""
+        if self.offline:
+            return None
+        host = urlparse(url).hostname or ""
+        with self._sem(host):
+            self._reserve(host)
+            with self._stats_lock:
+                self.calls += 1
+            try:
+                r = self.session.get(url, timeout=timeout)
+            except requests.RequestException:
+                return None
+        return r.text if r.status_code == 200 else None
+
+    def download(self, url: str, dest: Path, resume: bool = True, log=lambda _m: None,
+                 headers: dict | None = None) -> Path:
+        """Stream a large file to disk (never cached, never held in memory), resuming a partial `dest`.
+        Raises on failure: a half-downloaded file is kept for the next resume."""
+        if self.offline:
+            raise RuntimeError(f"offline: can't download {url}")
+        host = urlparse(url).hostname or ""
+        have = dest.stat().st_size if resume and dest.exists() else 0
+        hdrs = {**(headers or {}), **({"Range": f"bytes={have}-"} if have else {})}
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        with self._sem(host):
+            self._reserve(host)
+            with self._stats_lock:
+                self.calls += 1
+            with self.session.get(url, headers=hdrs, stream=True, timeout=60) as r:
+                if r.status_code == 416:  # range past the end: already complete
+                    return dest
+                r.raise_for_status()
+                with dest.open("ab" if r.status_code == 206 else "wb") as f:
+                    for i, chunk in enumerate(r.iter_content(1 << 20), 1):
+                        f.write(chunk)
+                        if i % 256 == 0:
+                            log(f"{dest.name}: {f.tell() / 1e9:.2f} GB")
+        return dest
+
     def post(self, url, body, headers=None):
         return self.request("POST", url, body=body, headers=headers)
 
