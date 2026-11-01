@@ -10,6 +10,7 @@ Licences: the genre graph is CC0 (Wikidata). The store, the index and the weight
 under CC BY-NC-SA 3.0; release notes and the manifest say so. The code is MIT."""
 import hashlib
 import json
+import logging
 import lzma
 import shutil
 import subprocess
@@ -28,6 +29,8 @@ from .providers.listenbrainz import LBData, LBSimilar
 from .providers.musicbrainz import MusicBrainz
 from .providers.musicbrainz_store import INDEX_FILE, STORE_FILE, ArtistStore, import_dump
 from .providers.wikidata import Wikidata
+
+_log = logging.getLogger("postradio").info  # default for log= (prose for people)
 
 DUMPS = "https://data.metabrainz.org/pub/musicbrainz/data/json-dumps"
 DUMP_FILE = "artist.tar.xz"
@@ -191,7 +194,7 @@ def package(data_dir: Path, out_root: Path, dump: str, log: Callable[[str], None
 
 
 def build(http: Http, mb: MusicBrainz, data_dir: Path, out_root: Path, opts: BuildOptions | None = None,
-          log: Callable[[str], None] = print) -> Path:
+          log: Callable[[str], None] = _log) -> Path:
     opts = opts or BuildOptions()
     unknown = set(opts.skip) - set(STEPS)
     if unknown:
@@ -230,7 +233,7 @@ def release(http: Http, tag: str | None, repo: str = DATA_RELEASE_REPO) -> dict:
 
 
 def fetch(http: Http, data_dir: Path, tag: str | None = None, store: bool = True, repo: str = DATA_RELEASE_REPO,
-          log: Callable[[str], None] = print) -> dict:
+          log: Callable[[str], None] = _log) -> dict:
     """Download a release, check every file against its manifest, then install into data_dir. Nothing is
     installed unless every wanted file verifies. store=False leaves the big artist store out."""
     rel = release(http, tag, repo)

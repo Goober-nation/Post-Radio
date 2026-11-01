@@ -64,6 +64,7 @@ class FeedbackCfg:
 class Server:
     host: str = "127.0.0.1"
     port: int = 8765
+    job_workers: int = 2  # background jobs (POST /jobs/...) running at once; more wait queued
 
 
 # ---------------------------------------------------------------- advanced (algorithm constants)

@@ -6,13 +6,14 @@ popularity in [0, 1] (optional): 1 = hits by big artists, 0 = deep cuts by small
 Data in and out is models.* types only (no raw API payloads); every source sits behind a providers.*
 interface, and every tunable comes from config.Advanced.
 """
+import logging
 import math
 import random
 import re
 import threading
 from collections import defaultdict
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 
 from . import flow as flow_mod
@@ -34,7 +35,9 @@ from .providers import (
     TopTracks,
     TrackSimilarity,
 )
+from .results import Progress
 
+logger = logging.getLogger("postradio")
 _worker = threading.local()  # in_pool=True only on threads of a Radio's own fetch pool
 
 
@@ -196,8 +199,11 @@ class Run:
 
 
 class Radio:
-    def __init__(self, providers: Providers, adv: Advanced | None = None, log: Callable[[str], None] = print):
+    def __init__(self, providers: Providers, adv: Advanced | None = None, log: Callable[[str], None] = logger.info,
+                 progress: Callable[[Progress], None] | None = None):
+        """log: prose for people (default: the `postradio` logger). progress: structured events for a host app."""
         self.p, self.log = providers, log
+        self.progress = progress
         self.a = adv or Advanced()
         self.junk = re.compile(self.a.junk_title_pattern, re.IGNORECASE)
         self._history: History | None = None
@@ -234,26 +240,44 @@ class Radio:
             self.log(f"{what or owner}: skipped after {type(e).__name__}: {e}")
             return [] if default is None else default
 
-    def _map(self, fn, items: list) -> list:
+    def _map(self, fn, items: list, stage: str | None = None) -> list:
         """Run independent fetches concurrently (order kept), each isolated by _safe. Per-host limits live
-        in Http, so this only overlaps network latency; it never raises the request rate past the APIs' limits."""
+        in Http, so this only overlaps network latency; it never raises the request rate past the APIs' limits.
+        With `stage`, each finished item is reported as progress (done/total)."""
         def job(x):
             return self._safe(fn, x, what=getattr(fn, "__name__", "fetch"))
 
-        if len(items) <= 1 or getattr(_worker, "in_pool", False):
+        total = len(items)
+        if total <= 1 or getattr(_worker, "in_pool", False):
             # already inside a pooled job: run inline, since resubmitting could deadlock a saturated pool
-            return [job(x) for x in items]
-        return list(self._pool().map(job, items))
+            out = []
+            for i, x in enumerate(items, 1):
+                out.append(job(x))
+                if stage:
+                    self._report(stage, i, total)
+            return out
+        futures = [self._pool().submit(job, x) for x in items]
+        if stage:
+            for i, _ in enumerate(as_completed(futures), 1):
+                self._report(stage, i, total)
+        return [f.result() for f in futures]
 
     def _pool(self) -> ThreadPoolExecutor:
         """One pool per Radio (and its views), shared by graph building and the background taste load, so at
         most fetch_workers fetches run at once. _map called from inside a pooled job runs inline (no deadlock)."""
         return self._shared.get(self.a.fetch_workers)
 
-    def view(self, providers: Providers) -> "Radio":
+    def _report(self, stage: str, done: int | None = None, total: int | None = None, detail: str | None = None):
+        if self.progress:
+            try:
+                self.progress(Progress(stage, done, total, detail))
+            except Exception as e:  # noqa: BLE001 - a host's progress handler must never break a run
+                self.log(f"progress handler failed: {e}")
+
+    def view(self, providers: Providers, progress: Callable[[Progress], None] | None = None) -> "Radio":
         """The same engine for one listener: their own providers (taste, history, token-bound sources) and
         their own taste/history snapshot, sharing this Radio's thread pool. Cheap; make one per call."""
-        r = Radio(providers, self.a, self.log)
+        r = Radio(providers, self.a, self.log, progress)
         r._shared = self._shared
         return r
 
@@ -352,6 +376,7 @@ class Radio:
         frontier = [g.nodes[seed.key]]
         budget = {h: cap * h / sum(range(1, p.max_hops + 1)) for h in range(1, p.max_hops + 1)}
         for hop in range(1, p.max_hops + 1):
+            self._report("graph", hop, p.max_hops)
             new: list[Node] = []
             start = len(g.nodes)
             k = a.fanout.get(hop, a.fanout[max(a.fanout)])
@@ -439,7 +464,7 @@ class Radio:
         # popularity, which pass 2 folds in (this is what keeps deep exploration off the mainstream)
         by_weight = sorted(g.nodes.values(), key=lambda n: -self.artist_weight(n, p, run))
         shortlist = by_weight[:max(self.a.shortlist_min, p.n)]
-        fetched = self._map(lambda n: self._top_tracks(n.artist), shortlist)  # network, in parallel
+        fetched = self._map(lambda n: self._top_tracks(n.artist), shortlist, "catalogues")  # network, in parallel
         catalogue = {n.artist.key: tracks for n, tracks in zip(shortlist, fetched, strict=True)}
         nodes = sorted(shortlist, key=lambda n: -self.artist_weight(n, p, run))
         nodes = nodes[:max(self.a.candidate_artists_min, p.n // 2)]
@@ -471,7 +496,8 @@ class Radio:
         # one RNG per stream, derived from the run seed: reproducible regardless of thread timing
         seeds = [rng.random() for _ in jobs]
         fetched_radio = self._map(lambda ij: ij[1][1].radio(ij[1][0].artist, p.pop, p.radio_mode,
-                                                            random.Random(seeds[ij[0]])), list(enumerate(jobs)))
+                                                            random.Random(seeds[ij[0]])), list(enumerate(jobs)),
+                                   "radio")
         for (n, _), tracks in zip(jobs, fetched_radio, strict=True):
             for t in tracks:
                 hop = 0 if t.artist.key == seed.artist.key else n.hop + 1
@@ -513,6 +539,7 @@ class Radio:
         """dry=True: resolve the seed and build the artist graph only (no catalogues, no track picks)."""
         rng = random.Random(p.seed)
         run = Run(genres=list(seed_args.get("genres") or []), genre_op=seed_args.get("genre_op") or "or")
+        self._report("seed")
         seed_artist, seed_track = self.resolve(**seed_args)
         self.log(f"seed: {seed_artist.name} ({seed_artist.mbid})" + (f" / {seed_track.title}" if seed_track else ""))
 
@@ -536,6 +563,7 @@ class Radio:
         self.last_run = run
         cands = self.candidates(g, seed, p, seed_track, random.Random(rng.random()), run)
 
+        self._report("scoring", detail=f"{len(cands)} candidates")
         merged: dict[str, tuple[Track, Node]] = {}
         for t, n in cands:
             if self.junk.search(t.title):
@@ -574,6 +602,7 @@ class Radio:
         picked = self._select(scored, p)
         band = self.a.shuffle_band
         bands = [picked[i:i + band] for i in range(0, len(picked), band)]
+        self._report("done", len(picked), p.n)
         for b in bands:  # gentle shuffle so the list doesn't read as a strict ranking
             rng.shuffle(b)
         return {
@@ -648,6 +677,7 @@ class Radio:
         """The user's genre profile from their dated likes: (top artists, resolved artists, per-source artist
         genres, {genre: share}, spread over the graph). Raises InvalidInput when there's nothing to go on."""
         a = self.a
+        self._report("likes")
         likes = [x for prov in self.p.feedback for x in self._safe(prov.liked, default=[])]
         if not likes:
             raise InvalidInput("flow needs likes: a Yandex playlist, Navidrome stars, LB loves or imported loves")
@@ -656,7 +686,7 @@ class Radio:
         weights = {k: weights[k] for k in top}
         resolver = self.p.profile_resolver or self.p.resolver
         calls_before = getattr(getattr(resolver, "http", None), "calls", 0)
-        resolved = dict(zip(top, self._map(resolver.find_artist, top), strict=True))
+        resolved = dict(zip(top, self._map(resolver.find_artist, top, "profile"), strict=True))
         sources = []
         for name, tagger in self.p.profile_taggers.items():
             share = a.flow_source_shares.get(name, 0.0)
@@ -690,6 +720,7 @@ class Radio:
         roots = {g: n.roots for g, n in graph.nodes.items()}
         path = flow_mod.plan_path(spread, graph.adj, p.explore, p.stops, random.Random(rng.random()), roots, cfg)
         self.log("path: " + " -> ".join(path))
+        self._report("path", len(path), p.stops, " -> ".join(path))
         counts = flow_mod.allocate(p.n, len(path))
         if dry:  # preview: profile and path only, no artist pools or catalogues
             return {"dry": True, "rng_seed": p.seed, "path": path, "explore": p.explore, "popularity": p.popularity,
@@ -705,7 +736,8 @@ class Radio:
                 artist_genres.setdefault(x, [])
                 artist_genres[x] += [g for g in gs if g not in artist_genres[x]]
         pools_artists: dict[str, list[tuple[Artist, list[str], bool]]] = {}
-        for g, k in zip(path, counts, strict=True):
+        for i, (g, k) in enumerate(zip(path, counts, strict=True), 1):
+            self._report("pools", i, len(path), g)
             # about 3 candidates per wanted track of each kind keeps catalogue fetches proportional to n
             new_k = round(k * p.explore)
             fam_cap = min(a.flow_familiar_artists, 3 * max(1, k - new_k))
@@ -723,7 +755,8 @@ class Radio:
             pools_artists[g] = fam + [v for v in new.values() if v[0].key not in fam_keys][:new_cap]
 
         everyone = {ar.key: ar for arts in pools_artists.values() for ar, _, _ in arts}
-        catalogues = dict(zip(everyone, self._map(self._top_tracks, list(everyone.values())), strict=True))
+        catalogues = dict(zip(everyone, self._map(self._top_tracks, list(everyone.values()), "catalogues"),
+                              strict=True))
         pools: dict[str, list[flow_mod.Pick]] = {}
         for g, arts in pools_artists.items():
             picks = []
@@ -738,9 +771,11 @@ class Radio:
                     scored.append(flow_mod.Pick(t, gs or [g], familiar, s, extra={"artist_mbid": ar.mbid}))
                 picks += sorted(scored, key=lambda c: -c.score)[: a.flow_tracks_per_artist]
             pools[g] = picks
+        self._report("fill")
         stops = flow_mod.fill(path, pools, counts, p.explore, p.per_artist)
         tracks = flow_mod.order(stops, path, a.flow_artist_gap)
         self.log(f"flow: {len(tracks)} tracks over {len(path)} stops")
+        self._report("done", len(tracks), p.n)
         return {
             "path": path, "explore": p.explore, "popularity": p.popularity, "stops": p.stops,
             "profile": [{"genre": g, "share": s} for g, s in list(profile.items())[:20]],

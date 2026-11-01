@@ -1,4 +1,9 @@
 """Optional HTTP wrapper around api.Recommender (the CLI's `serve`). Same operations as the library."""
+import threading
+import time
+import uuid
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from typing import Literal
 
@@ -22,10 +27,68 @@ STATUS = [(NotFound, 404), (InvalidInput, 422), (SourceAuthError, 422), (SourceU
           (ConfigError, 500), (DataError, 500)]
 
 
+def status_of(e: Exception) -> int:
+    return next((c for cls, c in STATUS if isinstance(e, cls)), 500)
+
+
 def http_error(e: Exception) -> HTTPException:
     """One mapping from Post-Radio errors to HTTP codes, for every endpoint."""
-    code = next((c for cls, c in STATUS if isinstance(e, cls)), 500)
-    return HTTPException(code, str(e))
+    return HTTPException(status_of(e), str(e))
+
+
+class Jobs:
+    """Long runs (20 s to minutes) as background jobs: submit returns an id at once; get() reports status, the
+    latest progress event and, once finished, the result or a typed error. Finished jobs expire after `ttl_s`."""
+
+    def __init__(self, workers: int, ttl_s: float):
+        self.pool = ThreadPoolExecutor(max_workers=max(1, workers), thread_name_prefix="postradio-job")
+        self.ttl_s, self.jobs, self.lock = ttl_s, {}, threading.Lock()
+
+    def submit(self, kind: str, run: Callable[[Callable], object]) -> dict:
+        job = {"job_id": uuid.uuid4().hex[:12], "kind": kind, "status": "queued", "progress": None, "result": None,
+               "error": None, "created": time.time(), "finished": None}
+        with self.lock:
+            self._prune()
+            self.jobs[job["job_id"]] = job
+
+        def on_progress(p):
+            job["progress"] = p.to_dict()
+
+        def work():
+            job["status"] = "running"
+            try:
+                job["result"] = run(on_progress).to_dict()
+                job["status"] = "done"
+            except PostRadioError as e:
+                job["error"] = {"type": type(e).__name__, "message": str(e), "status": status_of(e)}
+                job["status"] = "error"
+            except Exception as e:  # noqa: BLE001 - reported to the caller instead of a lost thread
+                job["error"] = {"type": "InternalError", "message": f"{type(e).__name__}: {e}", "status": 500}
+                job["status"] = "error"
+            finally:
+                job["finished"] = time.time()
+
+        self.pool.submit(work)
+        return self.view(job)
+
+    def get(self, job_id: str) -> dict | None:
+        with self.lock:
+            self._prune()
+            job = self.jobs.get(job_id)
+        return self.view(job) if job else None
+
+    def _prune(self) -> None:
+        now = time.time()
+        for k in [k for k, j in self.jobs.items() if j["finished"] and now - j["finished"] > self.ttl_s]:
+            del self.jobs[k]
+
+    @staticmethod
+    def view(job: dict) -> dict:
+        return {k: job[k] for k in ("job_id", "kind", "status", "progress", "result", "error")} | {
+            "status_url": f"/jobs/{job['job_id']}"}
+
+    def close(self) -> None:
+        self.pool.shutdown(wait=False, cancel_futures=True)
 
 
 class LikeIn(BaseModel):
@@ -134,9 +197,12 @@ class SaveRequest(BaseModel):
 def create_app(rec: Recommender | None = None) -> FastAPI:
     rec = rec or Recommender()
 
+    jobs = Jobs(rec.cfg.server.job_workers, rec.cfg.storage.result_ttl_s)
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         yield
+        jobs.close()
         rec.close()  # release worker threads and the cache connection with the server
 
     app = FastAPI(title=DISPLAY_NAME, lifespan=lifespan)
@@ -176,6 +242,39 @@ def create_app(rec: Recommender | None = None) -> FastAPI:
             return rec.profile(listener.build()).to_dict()
         except PostRadioError as e:
             raise http_error(e) from e
+
+    # long runs as background jobs: POST returns 202 + a job id at once; poll GET /jobs/{id}
+    def _check_radio(req: RadioRequest) -> None:
+        seeds = (req.artist, req.track, req.artist_mbid, req.recording_mbid, req.genres or None)
+        if sum(x is not None for x in seeds) != 1:
+            raise HTTPException(422, "give exactly one of artist, track, artist_mbid, recording_mbid, genres")
+
+    @app.post("/jobs/radio", status_code=202)
+    def radio_job(req: RadioRequest):
+        _check_radio(req)
+        li = req.listener.build() if req.listener else None
+        args = req.model_dump(exclude={"listener"})
+        return jobs.submit("radio", lambda progress: rec.generate(**args, keep=not req.dry, listener=li,
+                                                                  progress=progress))
+
+    @app.post("/jobs/flow", status_code=202)
+    def flow_job(req: FlowRequest):
+        li = req.listener.build() if req.listener else None
+        args = req.model_dump(exclude={"listener"})
+        return jobs.submit("flow", lambda progress: rec.flow(**args, keep=not req.dry, listener=li,
+                                                             progress=progress))
+
+    @app.post("/jobs/profile", status_code=202)
+    def profile_job(listener: ListenerIn):
+        li = listener.build()
+        return jobs.submit("profile", lambda progress: rec.profile(li, progress=progress))
+
+    @app.get("/jobs/{job_id}")
+    def job(job_id: str):
+        got = jobs.get(job_id)
+        if got is None:
+            raise HTTPException(404, "unknown or expired job")
+        return got
 
     @app.get("/deep-cuts")
     def deep_cuts(user: str | None = None, kind: str = "exploration"):

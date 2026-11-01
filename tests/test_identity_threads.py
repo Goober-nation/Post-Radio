@@ -130,10 +130,12 @@ def test_inline_rule_is_a_thread_flag_not_a_name():
 def test_server_closes_recommender_on_shutdown():
     from fastapi.testclient import TestClient
 
+    from postradio.config import Config
     from postradio.server import create_app
 
     class Rec:
         closed = False
+        cfg = Config()
 
         def close(self):
             Rec.closed = True

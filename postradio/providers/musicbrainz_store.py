@@ -6,6 +6,7 @@ falls back to the API, so name resolution and genres need no requests or rate li
 Part of the MusicBrainz adapter: only this module and `musicbrainz.py` see MusicBrainz payloads.
 Licence: MusicBrainz genres and tags are CC BY-NC-SA 3.0 supplementary data; the store carries those terms."""
 import json
+import logging
 import re
 import sqlite3
 import tarfile
@@ -14,6 +15,8 @@ import time
 import unicodedata
 from collections.abc import Callable, Iterable
 from pathlib import Path
+
+_log = logging.getLogger("postradio").info  # default for log= (prose for people)
 
 STORE_FILE = "mb_artists.sqlite"  # in storage.data_dir
 INDEX_FILE = "genre_artists.json"  # in storage.data_dir: genre -> artists without the full store
@@ -85,7 +88,7 @@ def insert(con: sqlite3.Connection, artists: Iterable[dict], graph: set[str]) ->
     return n, tagged
 
 
-def import_dump(archive: Path, out: Path, graph: set[str], log: Callable[[str], None] = print) -> dict:
+def import_dump(archive: Path, out: Path, graph: set[str], log: Callable[[str], None] = _log) -> dict:
     """Stream `artist.tar.xz` (nothing extracted to disk) into a fresh store at `out`. ~3 M artists; minutes."""
     tmp = out.with_suffix(".tmp")
     tmp.unlink(missing_ok=True)

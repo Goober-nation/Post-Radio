@@ -218,3 +218,56 @@ def test_listener_likes_and_plays_as_data(shared):
     r = shared.generate(artist="Seed", n=20, per_artist=20, explore=0.5, listener=li)
     assert ("Alpha", "Alpha song 0") not in {(t.artist, t.title) for t in r.tracks}
     assert any(t.familiar for t in r.tracks if t.artist == "Alpha")  # played artist counts as known
+
+
+# ---------------------------------------------------------------- progress + jobs
+def test_progress_events_cover_the_stages(shared):
+    li = Listener(likes=[Like("Seed", "Seed song 0", at=100)])
+    seen = []
+    shared.flow(explore=0.5, n=6, stops=3, rng_seed=1, listener=li, progress=seen.append)
+    stages = [p.stage for p in seen]
+    for s in ("likes", "profile", "path", "pools", "catalogues", "fill", "done"):
+        assert s in stages
+    assert stages.index("likes") < stages.index("path") < stages.index("fill") < stages.index("done")
+    cats = [p for p in seen if p.stage == "catalogues"]
+    assert cats[-1].done == cats[-1].total and all(p.total == cats[0].total for p in cats)
+    radio_seen = []
+    shared.generate(artist="Seed", n=5, progress=radio_seen.append)
+    assert [p.stage for p in radio_seen][0] == "seed" and radio_seen[-1].stage == "done"
+
+
+def test_a_broken_progress_handler_never_breaks_a_run(shared):
+    def boom(_p):
+        raise RuntimeError("host bug")
+
+    assert shared.generate(artist="Seed", n=3, progress=boom).tracks
+
+
+def test_http_jobs(shared):
+    import time
+
+    from fastapi.testclient import TestClient
+
+    from postradio.server import create_app
+
+    def wait(client, url):
+        for _ in range(200):
+            got = client.get(url).json()
+            if got["status"] in ("done", "error"):
+                return got
+            time.sleep(0.01)
+        raise AssertionError("job never finished")
+
+    with TestClient(create_app(shared)) as client:
+        listener = {"likes": [{"artist": "Seed", "title": "Seed song 0", "at": 1}]}
+        r = client.post("/jobs/flow", json={"n": 4, "stops": 2, "rng_seed": 1, "listener": listener})
+        assert r.status_code == 202 and r.json()["status"] in ("queued", "running", "done")
+        done = wait(client, r.json()["status_url"])
+        assert done["status"] == "done" and done["result"]["kind"] == "flow" and done["progress"]["stage"] == "done"
+        failed = wait(client, client.post("/jobs/flow", json={"n": 4}).json()["status_url"])
+        assert failed["status"] == "error" and failed["error"]["type"] == "InvalidInput" and \
+            failed["error"]["status"] == 422
+        radio = wait(client, client.post("/jobs/radio", json={"artist": "Seed", "n": 3}).json()["status_url"])
+        assert radio["result"]["kind"] == "radio" and radio["result"]["result_id"]
+        assert client.post("/jobs/radio", json={"n": 3}).status_code == 422  # validated before queueing
+        assert client.get("/jobs/nope").status_code == 404

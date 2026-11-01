@@ -85,6 +85,8 @@ Every error raised on purpose is a `postradio.errors.PostRadioError`:
 | `POST /flow` | Body: `explore`, `popularity`, `n` (1–500), `per_artist`, `stops` (1–20), `rng_seed`, `dry` (profile and path only). Uses the configured likes. **422** without likes. |
 | `GET /profile` | The genre profile flow starts from (configured taste), plus nearby genres |
 | `POST /profile` | The same for the listener in the body: `likes`, `plays`, `yandex_playlist`, `yandex_tracks`, `lb_user`, `lb_token` |
+| `POST /jobs/radio`, `POST /jobs/flow`, `POST /jobs/profile` | Same bodies as `/radio`, `/flow` and `POST /profile`, run in the background. Answers **202** at once with `{job_id, status, status_url}`. Bad input is still rejected up front with 422. At most `server.job_workers` (2) run at once; the rest queue. |
+| `GET /jobs/{id}` | `status` (`queued`, `running`, `done`, `error`), `progress` (latest event), `result` (when done; same shape as the synchronous endpoint), `error` (`{type, message, status}`; status is the code the synchronous endpoint would have used). Finished jobs expire after `storage.result_ttl_s`; then 404. |
 | `GET /deep-cuts?user=&kind=exploration\|jams` | LB Weekly Exploration or Jams, one entry per week |
 | `GET /results/{id}` | An unsaved result from memory; 404 once expired |
 | `POST /results/{id}/save` | `{name, overwrite}`; 409 if the file exists |
@@ -128,6 +130,16 @@ other's. Its token is used for that call's ListenBrainz requests and is never st
 Over HTTP, `POST /radio` and `POST /flow` take the same fields under `"listener"`, and `POST /profile`
 takes a listener as its body.
 
+**Progress and logging.**
+- `progress=` on `generate` / `flow` / `profile` is called with a `Progress(stage, done, total, detail)` at
+  each stage. It runs on worker threads, so keep it quick; a failing handler is logged and never breaks the
+  run.
+- Radio stages: `seed`, `graph` (hop/hops), `catalogues` (artists done/total), `radio`, `scoring`, `done`.
+- Flow stages: `likes`, `profile` (artists done/total), `path`, `pools` (stop i/n), `catalogues`, `fill`,
+  `done`.
+- Prose messages go to the standard `logging` logger `postradio` (INFO), unless `log=` is given. The CLI
+  prints them to stderr.
+
 **Result types** (`postradio/results.py`); each has `to_dict()`, which is also what the HTTP API returns:
 - **`Playlist`**, from `generate` and `flow`:
   - common fields: `kind` (`radio` / `flow`), `tracks`, `explore`, `popularity`, `rng_seed`, `stats`,
@@ -167,7 +179,7 @@ that name the key.
 | `storage` | `save_dir` null (= `<state>/playlists`) · `feedback_file` null (= `<save_dir>/feedback/opinions.jsonl`) · `result_ttl_s` 3600 · `result_cache_size` 50 · `http_cache` null (= `<cache>/http.sqlite`) · `http_ttl_s` 604800 · `data_dir` null (= `<home>/data`: optional `mb_artists.sqlite`, `genre_weights.json`, `genre_artists.json`; everything works without them). Relative paths resolve against the config file's folder. |
 | `sources` | `use_lb_token` true · `history` lb (`lb` \| `file` \| `yandex` \| `none`) · `lb_user` null · `history_file` null · `yandex_playlist` null (a public Yandex Music playlist link) · `yandex_tracks` null (newest N only; null = all) |
 | `feedback` | `enabled` true · `sources` [json, yandex, navidrome, lb] (priority order; the first with an opinion on an item wins) · `navidrome_url` null (`$NAVIDROME_URL`) · `lb_user` null |
-| `server` | `host` 127.0.0.1 · `port` 8765 |
+| `server` | `host` 127.0.0.1 · `port` 8765 · `job_workers` 2 (background jobs running at once) |
 
 ## config.yaml: `advanced` (algorithm constants)
 

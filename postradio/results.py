@@ -149,3 +149,19 @@ class FlowPreview:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class Progress:
+    """One progress event of a running call (progress= on generate / flow / profile, and HTTP jobs).
+
+    stage: radio: seed, history, graph, catalogues, radio, scoring, done.
+           flow:  likes, profile, path, pools, catalogues, fill, done.
+    done/total: counts within the stage when known (artists fetched, stops filled); None otherwise."""
+    stage: str
+    done: int | None = None
+    total: int | None = None
+    detail: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)

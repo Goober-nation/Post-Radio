@@ -178,6 +178,20 @@ How Post-Vinyl (`rebuild/base`) handles ListenBrainz tokens, and what follows fo
   - each call's token reached its sources and is never echoed;
   - liked and played tracks are dropped, and played artists count as known.
 
+### Step 4 done: progress events, logging, HTTP jobs
+
+- `results.Progress` events via `progress=` (per call) at each stage. `Radio._map(stage=)` reports done/total
+  as fetches finish. A broken handler is logged, never fatal.
+- Prose goes to the `postradio` logger by default (the library was silent or printing before).
+- HTTP jobs: `POST /jobs/{radio,flow,profile}` → 202 + `job_id`; `GET /jobs/{id}` gives status, progress,
+  and the result or a typed error with its HTTP status. `server.job_workers` (2); finished jobs expire
+  after `result_ttl_s`.
+- Tests: stage order and done/total, a broken handler, jobs to done and to error, 422 before queueing, 404
+  for an unknown job.
+- Fixed two pre-existing flaky timing tests in `test_http_scheduler.py` (~1 failure in 15 full runs): they
+  checked every gap between thread wake-ups. They now check the total span, which is what proves the
+  shared schedule. 40 full runs then passed.
+
 ## Dry runs and seeds (user request, 2026-11-01)
 
 - `radio --dry`: the seed and the artist graph by hop, no tracks. `flow --dry`: the profile and the genre

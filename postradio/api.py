@@ -8,6 +8,7 @@
 Results live in an in-process TTL cache until saved; nothing touches disk unless save() is called.
 """
 import json
+import logging
 import random
 import re
 import threading
@@ -37,7 +38,7 @@ from .providers.listener import LikesFeedback, MergedHistory, PlaysHistory
 from .providers.musicbrainz import MusicBrainz
 from .providers.musicbrainz_store import ArtistStore, GenreIndex
 from .providers.yandex import YandexLikes, YandexSimilar, genre_table
-from .results import DeepCuts, FlowPreview, GraphPreview, Playlist, PlaylistTrack, Profile, Seed, Week
+from .results import DeepCuts, FlowPreview, GraphPreview, Playlist, PlaylistTrack, Profile, Progress, Seed, Week
 
 _CONFIGURED = object()  # "use this Recommender's configured value" (None means "none")
 SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
@@ -133,7 +134,7 @@ class Recommender:
                  state_dir: str | Path | None = None, token: str | None = None, lb_user: str | None = None,
                  history: HistoryProvider | None = None, feedback: list[FeedbackProvider] | None = None,
                  offline: bool = False, env: Mapping[str, str] | None = None,
-                 log: Callable[[str], None] = lambda _m: None):
+                 log: Callable[[str], None] | None = None):
         """cfg: a Config (config.load(path) reads a file); None = built-in defaults.
 
         Folders: explicit cache_dir / data_dir / state_dir > the config's storage paths > `home` (cache/,
@@ -146,6 +147,7 @@ class Recommender:
 
         Pass `history` / `feedback` to supply listening history or loves/hates from anywhere (e.g. a
         multi-scrobbler/Maloja adapter); otherwise both come from config."""
+        log = log or logging.getLogger("postradio").info  # prose; progress events are separate (progress=)
         self.cfg = cfg or config_mod.Config()
         self.env = dict(env or {})
         s, a, st = self.cfg.sources, self.cfg.advanced, self.cfg.storage
@@ -252,10 +254,11 @@ class Recommender:
                          history=history, feedback=feedback, track_similarity=LBSimilarRecordings(http),
                          genres=[tags, dz] + ([mb] if self.store or self.genre_index else []))
 
-    def _radio_for(self, listener: "Listener | None") -> Radio:
-        """The shared engine, or a per-call view of it with this listener's taste, history and token."""
+    def _radio_for(self, listener: "Listener | None", progress: Callable[[Progress], None] | None = None) -> Radio:
+        """The shared engine, or a per-call view of it with this listener's taste, history and token and/or
+        this call's progress handler."""
         if listener is None:
-            return self.radio
+            return self.radio.view(self.radio.p, progress) if progress else self.radio
         a = self.cfg.advanced
         yandex = (YandexLikes(self.http, listener.yandex_playlist, listener.yandex_tracks, log=self.log)
                   if listener.yandex_playlist else None)
@@ -276,7 +279,7 @@ class Recommender:
         if listener.lb_user:
             histories.append(ListenBrainzHistory(self.http, listener.lb_user, token, refresh_s=a.history_refresh_s))
         history = MergedHistory(histories, self.log) if histories else NoHistory()
-        return self.radio.view(self._providers(token or "", history, feedback, yandex))
+        return self.radio.view(self._providers(token or "", history, feedback, yandex), progress)
 
     # ------------------------------------------------------------------ radio
     def generate(self, *, artist: str | None = None, track: str | None = None, artist_mbid: str | None = None,
@@ -284,11 +287,13 @@ class Recommender:
                  explore: float | None = None, popularity: float | None = None, n: int | None = None,
                  per_artist: int | None = None, rng_seed: int | None = None, auto_popularity: bool = False,
                  unheard: str | None = None, mix: dict[str, float] | None = None, dry: bool = False,
-                 keep: bool = False, listener: Listener | None = None) -> Playlist | GraphPreview:
+                 keep: bool = False, listener: Listener | None = None,
+                 progress: Callable[[Progress], None] | None = None) -> Playlist | GraphPreview:
         """Unset knobs fall back to config defaults. auto_popularity=True ignores a configured default
         popularity so it follows explore. Without rng_seed a seed is picked and reported (`rng_seed` in the
         result), so any run can be repeated. dry=True previews the artist graph without picking tracks.
-        listener: this call's taste/history/token instead of the configured ones (see Listener)."""
+        listener: this call's taste/history/token instead of the configured ones (see Listener).
+        progress: called with a Progress event at each stage (from worker threads; keep it quick)."""
         rng_seed = new_seed() if rng_seed is None else rng_seed
         d = self.cfg.defaults
         pop = popularity if popularity is not None else (None if auto_popularity else d.popularity)
@@ -303,8 +308,9 @@ class Recommender:
                 raise InvalidInput(f"{name} must be in [0, 1]")
         if sum(x is not None for x in (artist, track, artist_mbid, recording_mbid, genres or None)) != 1:
             raise InvalidInput("give exactly one seed: artist, track, artist_mbid, recording_mbid or genres")
-        res = self._radio_for(listener).generate(p, dry=dry, artist=artist, track=track, artist_mbid=artist_mbid,
-                                  recording_mbid=recording_mbid, genres=genres, genre_op=genre_op)
+        res = self._radio_for(listener, progress).generate(
+            p, dry=dry, artist=artist, track=track, artist_mbid=artist_mbid, recording_mbid=recording_mbid,
+            genres=genres, genre_op=genre_op)
         if dry:
             return GraphPreview(rng_seed, Seed(**{k: v for k, v in res["seed"].items() if k != "popularity"},
                                                genres=res["genres"]),
@@ -314,7 +320,8 @@ class Recommender:
 
     def flow(self, *, explore: float | None = None, popularity: float | None = None, n: int | None = None,
              per_artist: int | None = None, stops: int = 5, rng_seed: int | None = None, dry: bool = False,
-             keep: bool = False, listener: Listener | None = None) -> Playlist | FlowPreview:
+             keep: bool = False, listener: Listener | None = None,
+             progress: Callable[[Progress], None] | None = None) -> Playlist | FlowPreview:
         """A playlist from the user's own likes, no seed: a path of genre stops through the genre graph (explore =
         how far from their genres), filled with familiar and new artists. Needs likes (Yandex playlist,
         Navidrome stars, LB loves or imported loves). Without rng_seed a seed is picked and reported, so the
@@ -330,7 +337,7 @@ class Recommender:
         for name, v in (("explore", p.explore), ("popularity", p.popularity)):
             if v is not None and not 0 <= v <= 1:
                 raise InvalidInput(f"{name} must be in [0, 1]")
-        res = self._radio_for(listener).flow(p, self.genre_graph(), dry=dry)
+        res = self._radio_for(listener, progress).flow(p, self.genre_graph(), dry=dry)
         if dry:
             return FlowPreview(rng_seed, res["path"], res["explore"], res["popularity"], res["stops"],
                                res["tracks_per_stop"], res["familiarity"], res["graph_learned"], res["profile"],
@@ -339,9 +346,10 @@ class Recommender:
         name = f"{datetime.now(UTC):%Y-%m-%d}_flow_e{p.explore:.2f}_p{pop}"
         return self._remember(_flow_playlist(res, rng_seed), name, keep)
 
-    def profile(self, listener: Listener | None = None) -> Profile:
+    def profile(self, listener: Listener | None = None,
+                progress: Callable[[Progress], None] | None = None) -> Profile:
         """The taste profile flow mode would use: the user's genres and their nearest neighbours."""
-        _, _, _, profile, spread = self._radio_for(listener).profile(self.genre_graph())
+        _, _, _, profile, spread = self._radio_for(listener, progress).profile(self.genre_graph())
         return Profile([{"genre": g, "share": s} for g, s in profile.items()],
                        [{"genre": s.genre, "score": s.score, "hop": s.hop} for s in spread if s.hop > 0][:20])
 

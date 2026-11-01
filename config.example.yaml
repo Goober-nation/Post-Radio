@@ -35,6 +35,7 @@ feedback:
 server:
   host: 127.0.0.1
   port: 8765
+  job_workers: 2
 
 # ---------------- advanced: algorithm constants ----------------
 # Changing these alters ranking behaviour; defaults are tuned by hand on ~10 seeds.
