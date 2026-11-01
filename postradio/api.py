@@ -35,6 +35,7 @@ from .providers.lb_playlists import KINDS, LBCreatedFor
 from .providers.listenbrainz import LBSimilar, LBSimilarRecordings, LBTopTracks, TroiRadio, TroiTagRadio
 from .providers.musicbrainz import MusicBrainz
 from .providers.musicbrainz_store import ArtistStore, GenreIndex
+from .providers.yandex import YandexLikes, YandexSimilar, genre_table
 
 SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -97,6 +98,9 @@ class Recommender:
         store_path = (self.cfg.path(st.feedback_file) if st.feedback_file
                       else self.cfg.path(st.save_dir) / "feedback" / "opinions.jsonl")
         self.feedback_store = JsonFeedbackStore(store_path, self.cfg.advanced.feedback_store_depth)
+        s_ = self.cfg.sources
+        self.yandex = (YandexLikes(self.http, s_.yandex_playlist, s_.yandex_tracks, log=log)
+                       if s_.yandex_playlist else None)
         self.history = history or self._history_from_config()
         self.feedback = feedback if feedback is not None else self._feedback_from_config()
         self.cache = ResultCache(self.cfg.storage.result_ttl_s, self.cfg.storage.result_cache_size)
@@ -109,6 +113,10 @@ class Recommender:
 
     def _history_from_config(self) -> HistoryProvider:
         s = self.cfg.sources
+        if s.history == "yandex":
+            if not self.yandex:
+                raise ValueError("sources.history = yandex needs sources.yandex_playlist")
+            return self.yandex.as_history()
         if s.history == "file":
             if not s.history_file:
                 raise ValueError("sources.history = file needs sources.history_file")
@@ -130,6 +138,9 @@ class Recommender:
                 user = f.lb_user or self.lb_user
                 if user:
                     out.append(LBFeedback(self.http, user, self.token, a.feedback_max_age_s))
+            elif name == "yandex":
+                if self.yandex:
+                    out.append(self.yandex)
             elif name == "navidrome":
                 url = f.navidrome_url or os.environ.get("NAVIDROME_URL")
                 user, pw = os.environ.get("NAVIDROME_USERNAME"), os.environ.get("NAVIDROME_PASSWORD")
@@ -139,7 +150,7 @@ class Recommender:
                     self.log("feedback: navidrome skipped (needs feedback.navidrome_url or $NAVIDROME_URL, "
                              "$NAVIDROME_USERNAME, $NAVIDROME_PASSWORD)")
             else:
-                raise ValueError(f"feedback.sources: unknown source '{name}' (json | navidrome | lb)")
+                raise ValueError(f"feedback.sources: unknown source '{name}' (json | yandex | navidrome | lb)")
         return out
 
     def _providers(self) -> Providers:
@@ -152,7 +163,8 @@ class Recommender:
                     memo_ttl_s=self.cfg.storage.http_ttl_s)
         tracks = [dz] + ([lb_top] if lb_top else [])  # LB's popularity endpoint is the only one needing a token
         tags = TroiTagRadio(http, token, a.troi_window_width, a.genre_recordings_per_artist)
-        return Providers(resolver=mb, similar=[LBSimilar(http), dz, mb], tracks=tracks,
+        similar = [LBSimilar(http), dz, mb] + ([YandexSimilar(http, self.yandex)] if self.yandex else [])
+        return Providers(resolver=mb, similar=similar, tracks=tracks,
                          radios=[dz, TroiRadio(http, token, a.troi_window_width)], tagger=mb, tag_radio=tags,
                          history=self.history, feedback=self.feedback, track_similarity=LBSimilarRecordings(http),
                          genres=[tags, dz] + ([mb] if self.store or self.genre_index else []))
@@ -261,9 +273,11 @@ class Recommender:
         return self.cfg.path(self.cfg.storage.data_dir)
 
     def genre_graph(self) -> GenreGraph:
-        """The genre graph: packaged Wikidata structure, ranked by learned weights when installed."""
+        """The genre graph: packaged Wikidata structure plus the Yandex genre tree, ranked by learned weights
+        when installed."""
         a = self.cfg.advanced
-        return GenreGraph.load(a.genre_kind_weights, a.genre_fallback_scale, data_dir=self.data_dir)
+        return GenreGraph.load(a.genre_kind_weights, a.genre_fallback_scale, data_dir=self.data_dir,
+                               yandex=genre_table())
 
     def save(self, result_id: str, name: str | None = None, overwrite: bool = False) -> Path:
         res = self.get(result_id)

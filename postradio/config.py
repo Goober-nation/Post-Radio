@@ -35,15 +35,17 @@ class Storage:
 @dataclass
 class Sources:
     use_lb_token: bool = True  # adds LB popularity as a 2nd track source when $LISTENBRAINZ_TOKEN is set
-    history: str = "lb"  # lb | file | none
+    history: str = "lb"  # lb | file | yandex | none
     lb_user: str | None = None  # null = $LISTENBRAINZ_USERNAME
     history_file: str | None = None  # .jsonl/.csv plays (artist, title, [timestamp, artist_mbid, recording_mbid])
+    yandex_playlist: str | None = None  # public Yandex Music playlist link (e.g. your likes): taste + history
+    yandex_tracks: int | None = None  # keep only the newest N playlist tracks; null = all
 
 
 @dataclass
 class FeedbackCfg:
     enabled: bool = True  # loves/hates/ratings influence the recs
-    sources: list[str] = field(default_factory=lambda: ["json", "navidrome", "lb"])  # priority: first wins
+    sources: list[str] = field(default_factory=lambda: ["json", "yandex", "navidrome", "lb"])  # first wins
     navidrome_url: str | None = None  # null = $NAVIDROME_URL; creds from $NAVIDROME_USERNAME/$NAVIDROME_PASSWORD
     lb_user: str | None = None  # null = sources.lb_user / $LISTENBRAINZ_USERNAME
 
@@ -85,7 +87,7 @@ class Advanced:
     unknown_artist_pop_fit: float = 0.7
     # graph
     source_weights: dict[str, float] = field(default_factory=lambda: {
-        "lb": 1.0, "deezer": 0.85, "mb": 0.6, "tag": 0.5, "radio": 0.5, "genre": 0.9})
+        "lb": 1.0, "deezer": 0.85, "mb": 0.6, "tag": 0.5, "radio": 0.5, "genre": 0.9, "yandex": 0.85})
     agreement_bonus: float = 1.15
     graph_cap: int = 160
     fanout: dict[int, int] = field(default_factory=lambda: {1: 14, 2: 8, 3: 6})
@@ -240,8 +242,12 @@ def validate(c: "Config") -> "Config":
         problems.append("defaults.per_artist must be at least 1")
     if d.unheard not in (None, "none", "tracks", "artists"):
         problems.append("defaults.unheard must be null, tracks or artists")
-    if c.sources.history not in ("lb", "file", "none"):
-        problems.append("sources.history must be lb, file or none")
+    if c.sources.history not in ("lb", "file", "yandex", "none"):
+        problems.append("sources.history must be lb, file, yandex or none")
+    if c.sources.history == "yandex" and not c.sources.yandex_playlist:
+        problems.append("sources.history = yandex needs sources.yandex_playlist")
+    if c.sources.yandex_tracks is not None and c.sources.yandex_tracks < 1:
+        problems.append("sources.yandex_tracks must be at least 1 or null")
     for k, v in c.advanced.mix.items():
         if k not in STREAMS:
             problems.append(f"advanced.mix: unknown stream '{k}' (one of {', '.join(STREAMS)})")

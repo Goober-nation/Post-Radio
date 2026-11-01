@@ -27,6 +27,8 @@ flowchart TB
     p_mb --> p_mbs
     p_wd[providers.wikidata] --> http
     api --> data
+    api --> p_yx[providers.yandex]
+    p_yx --> http & models
     data --> p_wd & p_mb & p_mbs & p_lb & genres & http
     engine --> providers
     engine --> models
@@ -49,6 +51,7 @@ flowchart TB
 | `Wikidata` | `query.wikidata.org/sparql`: three SPARQL queries (ancestors, labels, influences) | none | Data build only. 1 req/s, 1 in flight, 180 s timeout. Each query must stay under Wikidata's 60 s limit, or the answer comes back cut off mid-JSON; `Http` retries a body it can't parse. |
 | `LBData` | `api.listenbrainz.org/1/stats/sitewide/artists`, `/1/metadata/artist/?inc=tag` | none | Data build only. About 10 seed pages plus about 40 metadata batches. Similar pairs reuse `LBSimilar`. |
 | `data.fetch` | `api.github.com/repos/{DATA_RELEASE_REPO}/releases`, then asset downloads | none | The release listing is cached for 10 min. Assets are streamed to disk and checked by sha256. |
+| `YandexLikes`, `YandexSimilar` | `api.music.yandex.ru`, then `.net`: `/users/{owner}/playlists/{kind}` or `/playlist/{uuid}` (`?page=N`), `/artists/{id}/similar` | none (public playlists only) | Default spacing. Answers 451 to playlist calls from some regions, cloud machines included. |
 | `Deezer` | `api.deezer.com`: `/search/artist`, `/artist/{id}/top`, `/related`, `/radio`, `/genre`, `/genre/{id}/artists` | none | 0.12 s spacing, 6 in flight. The quota error (code 4) is retried; "no data" (code 800) is cached as an answer; any other error body is returned uncached. |
 | `LBSimilar` | `labs.api.listenbrainz.org/similar-artists/json` | none | 0.1 s spacing, 4 in flight |
 | `LBTopTracks` | `api.listenbrainz.org/1/popularity/top-recordings-for-artist` | **token** | Wired in only when a token is set. It is the authoritative artist popularity. |

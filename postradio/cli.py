@@ -89,6 +89,8 @@ def parser() -> argparse.ArgumentParser:
     h.add_argument("--lb-user", help="history from this LB user")
     h.add_argument("--history-file", help="history from a .jsonl/.csv plays file")
     h.add_argument("--no-history", action="store_true")
+    r.add_argument("--yandex", metavar="URL", help="public Yandex Music playlist (e.g. your likes) as history + taste")
+    r.add_argument("--yandex-tracks", type=int, metavar="N", help="only the newest N playlist tracks (default: all)")
     r.add_argument("--no-feedback", action="store_true", help="ignore loves/hates/ratings")
     r.add_argument("--navidrome-url", help="read stars/ratings from this Navidrome (creds from env)")
     r.add_argument("--save", nargs="?", const="", metavar="NAME", help="save the result (default name if omitted)")
@@ -144,6 +146,10 @@ def main(argv=None):
             history = FileHistory(a.history_file)
         elif a.lb_user:
             cfg = replace(cfg, sources=replace(cfg.sources, history="lb", lb_user=a.lb_user))
+        if a.yandex:
+            hist = "yandex" if not (a.no_history or a.history_file or a.lb_user) else cfg.sources.history
+            cfg = replace(cfg, sources=replace(cfg.sources, yandex_playlist=a.yandex, history=hist,
+                                               yandex_tracks=a.yandex_tracks or cfg.sources.yandex_tracks))
         if a.no_feedback:
             cfg = replace(cfg, feedback=replace(cfg.feedback, enabled=False))
         if a.navidrome_url:

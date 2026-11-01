@@ -21,10 +21,13 @@ sources:
   history: lb
   lb_user: null
   history_file: null
+  yandex_playlist: null
+  yandex_tracks: null
 feedback:
   enabled: true
   sources:
   - json
+  - yandex
   - navidrome
   - lb
   navidrome_url: null
@@ -65,6 +68,7 @@ advanced:
     tag: 0.5
     radio: 0.5
     genre: 0.9
+    yandex: 0.85
   agreement_bonus: 1.15
   graph_cap: 160
   fanout:

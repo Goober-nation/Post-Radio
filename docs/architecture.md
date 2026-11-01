@@ -82,6 +82,25 @@ flowchart TB
 - A `genre_graph.json` in `data_dir` (installed with the store it was built against) wins over the
   packaged graph.
 
+## Yandex Music (`providers/yandex.py`)
+
+With `sources.yandex_playlist` set (or `radio --yandex URL`), a public Yandex playlist, usually your likes:
+- **Taste:** every track is a love of that track (`feedback.sources` entry `yandex`, second after `json`).
+  Artist scores sum their tracks' scores, as with any other source.
+- **History** (`sources.history: yandex`, which `--yandex` sets): every track is a play, dated when it
+  was added. Liked songs drop out of the radio, and liked artists count as familiar.
+- **Similar artists:** `YandexSimilar` joins the graph sources (weight `source_weights.yandex`). It only
+  expands artists from the playlist, because only they have Yandex ids. Entries in Yandex's soundtrack
+  branch (films, TV series, video games, anime) are dropped.
+- **Tags:** `YandexLikes.tags()` maps each artist's album genres through `yandex_genres.json` to
+  MusicBrainz genres. The flow mode will use this.
+- **Genre graph:** the same table's Yandex genre tree is laid over the Wikidata graph as `yandex_parent`
+  edges.
+
+The whole playlist is read by default; `sources.yandex_tracks` keeps only the newest N tracks. If paging
+stops early, what arrived is kept and the gap is logged. Yandex answers 451 to playlist requests from
+some regions; the source then contributes nothing and the run logs why.
+
 ## Data build and fetch (`postradio/data.py`)
 
 `postradio data build` writes into `data_dir`, then packages `dist/data-YYYY-MM/`. Every download goes

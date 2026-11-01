@@ -8,7 +8,7 @@ of a traceback.
 
 | Command | Flags (default) |
 |---|---|
-| `radio` | **Seed, exactly one:** `--artist` · `--track "Artist - Title"` · `--artist-mbid` · `--recording-mbid` · `--genre "a,b"`<br>**Seed options:** `--genre-op or\|and` (or) · `--unheard none\|tracks\|artists` (config; `none` overrides it)<br>**Shape:** `-e/--explore` 0–1 (0.5) · `-p/--popularity` 0–1 (unset = follows explore) · `--auto-popularity` · `-n` (50) · `--per-artist` (2) · `--rng-seed`<br>**History, at most one:** `--lb-user U` · `--history-file F.jsonl\|csv` · `--no-history`<br>**Taste:** `--no-feedback` · `--navidrome-url URL`<br>**Streams:** `--mix "deezer-top=0.2,troi=1"`<br>**Save:** `--save [NAME]` |
+| `radio` | **Seed, exactly one:** `--artist` · `--track "Artist - Title"` · `--artist-mbid` · `--recording-mbid` · `--genre "a,b"`<br>**Seed options:** `--genre-op or\|and` (or) · `--unheard none\|tracks\|artists` (config; `none` overrides it)<br>**Shape:** `-e/--explore` 0–1 (0.5) · `-p/--popularity` 0–1 (unset = follows explore) · `--auto-popularity` · `-n` (50) · `--per-artist` (2) · `--rng-seed`<br>**History, at most one:** `--lb-user U` · `--history-file F.jsonl\|csv` · `--no-history`<br>**Yandex:** `--yandex URL` (playlist as history + taste) · `--yandex-tracks N`<br>**Taste:** `--no-feedback` · `--navidrome-url URL`<br>**Streams:** `--mix "deezer-top=0.2,troi=1"`<br>**Save:** `--save [NAME]` |
 | `deep-cuts` | `--user` (config / `$LISTENBRAINZ_USERNAME`) · `--kind exploration\|jams` (exploration) · `--save [NAME]` |
 | `feedback import FILE\|-` | Append a dated loves/hates batch |
 | `feedback batches` | List imported batches with dates |
@@ -62,8 +62,8 @@ that name the key.
 |---|---|
 | `defaults` | `explore` 0.5 · `popularity` null · `n` 50 · `per_artist` 2 · `unheard` null (`tracks` \| `artists`) |
 | `storage` | `save_dir` `~/.local/share/postradio/playlists` · `feedback_file` null (= `<save_dir>/feedback/opinions.jsonl`) · `result_ttl_s` 3600 · `result_cache_size` 50 · `http_cache` `.cache/http.sqlite` · `http_ttl_s` 604800 · `data_dir` `~/.local/share/postradio/data` (optional `mb_artists.sqlite`, `genre_weights.json`, `genre_artists.json`; everything works without them) |
-| `sources` | `use_lb_token` true · `history` lb (`lb` \| `file` \| `none`) · `lb_user` null · `history_file` null |
-| `feedback` | `enabled` true · `sources` [json, navidrome, lb] (priority order; the first with an opinion on an item wins) · `navidrome_url` null (`$NAVIDROME_URL`) · `lb_user` null |
+| `sources` | `use_lb_token` true · `history` lb (`lb` \| `file` \| `yandex` \| `none`) · `lb_user` null · `history_file` null · `yandex_playlist` null (a public Yandex Music playlist link) · `yandex_tracks` null (newest N only; null = all) |
+| `feedback` | `enabled` true · `sources` [json, yandex, navidrome, lb] (priority order; the first with an opinion on an item wins) · `navidrome_url` null (`$NAVIDROME_URL`) · `lb_user` null |
 | `server` | `host` 127.0.0.1 · `port` 8765 |
 
 ## config.yaml: `advanced` (algorithm constants)
@@ -73,7 +73,7 @@ that name the key.
 | Explore → graph shape | `hop_span` 3.0 · `max_extra_hops` 2 · `radio_mode_thresholds` [0.34, 0.67] |
 | Explore / popularity → targets | `pop_slope` 0.85 · `ceiling_base` 0.95 · `ceiling_slope` 0.6 · `slider_ceiling_base` 0.35 · `slider_ceiling_slope` 0.6 · `seed_pop_margin` 0.2 |
 | Fit curve widths | `hop_width` 1.2 · `pop_width` 0.12 · `artist_pop_width` 0.03 · `unknown_artist_pop_fit` 0.7 |
-| Graph | `source_weights` (lb 1.0, deezer 0.85, mb 0.6, tag 0.5, radio 0.5, genre 0.9) · `agreement_bonus` 1.15 · `graph_cap` 160 · `fanout` {1: 14, 2: 8, 3: 6} · `frontier_base` 16 · `frontier_min` 4 · `sparse_graph` 8 · `tag_neighbours` 20 · `tag_radio_recordings` 60 · `genre_seed_artists` 30 · `genre_seed_tracks` 100 · `genre_recordings_per_artist` 3 |
+| Graph | `source_weights` (lb 1.0, deezer 0.85, mb 0.6, tag 0.5, radio 0.5, genre 0.9, yandex 0.85) · `agreement_bonus` 1.15 · `graph_cap` 160 · `fanout` {1: 14, 2: 8, 3: 6} · `frontier_base` 16 · `frontier_min` 4 · `sparse_graph` 8 · `tag_neighbours` 20 · `tag_radio_recordings` 60 · `genre_seed_artists` 30 · `genre_seed_tracks` 100 · `genre_recordings_per_artist` 3 |
 | Stream caps | `mix`: deezer-top, lb, deezer-radio, troi, track-sim, lb-tags, each 1.0 (see [architecture.md](architecture.md#stream-caps)) |
 | Candidates | `shortlist_min` 40 · `candidate_artists_min` 18 · `radio_neighbours` 3 · `top_tracks_limit` 100 · `junk_title_pattern` (live, demo, remix, …) |
 | Ranking | `familiarity_strength` 0.9 · `familiarity_saturation` 200 · `heard_skip_explore` 0.3 · `heard_penalty` 0.6 · `multi_source_bonus` 0.2 · `jitter` 0.3 · `shuffle_band` 10 · `max_source_share` 0.5 |
