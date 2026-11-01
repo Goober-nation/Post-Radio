@@ -78,6 +78,39 @@ Checked on real services:
 - Open: popularity "match me" (default = the user's own median), regionality, the three taste time
   scales, tempo ordering, and moving the explorer page here.
 
+## Phase 4.5: library hardening + integration testing (decided 2026-11-01, before phase 5)
+
+Why: radio and flow had been exercised from the CLI only. Library callers (Post-Vinyl, the webpage, other
+projects) and the HTTP API were barely tested together. The trigger was a config-only setup that broke
+flow ("flow needs likes") because a rule lived in the CLI.
+
+Decisions (user):
+1. **Order:** this phase comes before the webpage switch-over.
+2. **Results:** typed objects with `to_dict()`, one shape for radio and flow (e.g. `Playlist`,
+   `PlaylistTrack`: artist, title, MBIDs, Deezer id, stop/hop, scores), and a stable JSON form for HTTP.
+3. **Multi-user:** one long-lived `Recommender`, with taste and history passed per call
+   (generate/flow/profile). Users can also bring **their own ListenBrainz token** per call: it is their
+   LB catalogue and makes identity checks fast.
+4. **Long runs:** structured **progress events** (stage, done/total), with the standard `logging` module
+   for prose, and **HTTP jobs** (POST returns a job id; GET /jobs/{id} gives status, progress and the
+   result).
+   - Not chosen for now: a cancel token or deadline per call, and recorded-response replay fixtures.
+
+Planned work (to confirm order):
+- **Paths:** stop resolving `config.yaml`, `.env` and the relative HTTP cache path against the repo root.
+  In a pip install that root is site-packages. Use the user's config and cache directories, and read
+  nothing implicitly as a library.
+- **One error base `PostRadioError`** with subtypes for bad input, not found, a source unavailable and
+  data missing. Today these are mixed `ValueError` and `FileNotFoundError` subclasses.
+- **No storage by default:** results are only cached or saved when asked.
+- **Rules move from the CLI into `Recommender`,** so library, CLI and HTTP behave the same.
+- **Flow tracks need recording MBIDs** where possible (Deezer tracks usually have none). Post-Vinyl needs
+  them for search and tagging.
+- **Tests across Python API, CLI and HTTP** (`/radio`, `/flow`, `/profile`, `dry`, jobs, error codes) on
+  the same fake providers, plus multi-user concurrency: two users' taste in parallel on one
+  `Recommender`.
+- A **library usage doc** for Post-Vinyl.
+
 ## Dry runs and seeds (user request, 2026-11-01)
 
 - `radio --dry`: the seed and the artist graph by hop, no tracks. `flow --dry`: the profile and the genre
