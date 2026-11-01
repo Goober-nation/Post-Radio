@@ -210,6 +210,37 @@ How Post-Vinyl (`rebuild/base`) handles ListenBrainz tokens, and what follows fo
 
 Phase 4.5 is complete. Next: phase 5 (webpage switch-over), which uses this library surface.
 
+## Phase 5 planning: webpage review (2026-11-01)
+
+The "map out the project" skill isn't available (not among the user's skills, not in any repo). The
+webpage was mapped by hand.
+
+Webpage today (`main` = `genre-graph` for app/static):
+- invite login, optional Yandex playlist (its own client), Deezer search;
+- a job queue running each generation in a fresh process (killed at 120 s or when the page closes), stage
+  parsed from log lines;
+- Deezer previews and survey answers into `results/*.json`;
+- pins Post-Radio `4e97ba4` and imports it (`app/radio.py`).
+
+Decisions (user):
+- **The webpage is fully detached:** its own repo, never installing or importing Post-Radio. It talks to a
+  Post-Radio server (`postradio serve`, its own container in the same compose project, internal network)
+  over HTTP. Post-Vinyl keeps using the library directly.
+- **Flow mode in the survey UI,** with a dry preview of the genre path first.
+- **Yandex-similar artists:** library behaviour, i.e. a graph source, no longer half-weight likes.
+- **MusicBrainz store installed** on the survey server (into Post-Radio's data volume).
+
+Post-Radio server work this needs (before the webpage switch):
+1. Job cancel (`DELETE /jobs/{id}`) and a per-job deadline: page closed, replaced by a new request, timeout.
+2. Queue info: position per job, `GET /jobs` for counts.
+3. `POST /profile` also returns the Yandex playlist summary (title, tracks, sample).
+4. `GET /genres` (the graph's genres) for genre autocomplete.
+5. `artist_popularity` and `via` on `PlaylistTrack` (the stats panel shows them).
+6. Dockerfile + compose example for `postradio serve`; an API version for compatibility checks.
+
+Then the webpage: an HTTP client instead of `app/radio.py`, deleting the moved modules, flow tab with dry
+preview, new error messages, compose with both services.
+
 ## Dry runs and seeds (user request, 2026-11-01)
 
 - `radio --dry`: the seed and the artist graph by hop, no tracks. `flow --dry`: the profile and the genre
