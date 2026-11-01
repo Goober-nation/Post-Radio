@@ -138,7 +138,7 @@ class Http:
 
     # ---------------------------------------------------------------- requests
     def request(self, method, url, params=None, body=None, headers=None, shape=None, max_age=None,
-                cache_params=None, valid=None):
+                cache_params=None, valid=None, timeout: float = 20):
         key = self._key(method, url, cache_params if cache_params is not None else params, body)
         row = self._cached(key)
         if row and (self.offline or time.time() - row[0] < (max_age if max_age is not None else self.ttl)):
@@ -153,7 +153,7 @@ class Http:
                 with self._stats_lock:
                     self.calls += 1
                 try:
-                    r = self.session.request(method, url, params=params, json=body, headers=headers, timeout=20)
+                    r = self.session.request(method, url, params=params, json=body, headers=headers, timeout=timeout)
                 except requests.RequestException:
                     self._backoff(host, attempt, None, final=attempt == attempts - 1)
                     continue
@@ -164,7 +164,11 @@ class Http:
                     continue
                 if r.status_code != 200:
                     return None
-                data = r.json()
+                try:
+                    data = r.json()
+                except ValueError:  # truncated body (e.g. Wikidata cuts a streamed answer at its timeout): retry
+                    self._backoff(host, attempt, None, final=attempt == attempts - 1)
+                    continue
                 if host == "api.deezer.com" and _deezer_quota_error(data):
                     self._backoff(host, attempt, None, final=attempt == attempts - 1)  # 200 + error body
                     continue
@@ -195,9 +199,10 @@ class Http:
             self.db.close()
         self.session.close()
 
-    def get(self, url, params=None, headers=None, shape=None, max_age=None, cache_params=None, valid=None):
+    def get(self, url, params=None, headers=None, shape=None, max_age=None, cache_params=None, valid=None,
+            timeout: float = 20):
         return self.request("GET", url, params=params, headers=headers, shape=shape, max_age=max_age,
-                            cache_params=cache_params, valid=valid)
+                            cache_params=cache_params, valid=valid, timeout=timeout)
 
     def post(self, url, body, headers=None):
         return self.request("POST", url, body=body, headers=headers)

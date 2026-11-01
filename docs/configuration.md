@@ -56,7 +56,7 @@ that name the key.
 | Section | Keys (default) |
 |---|---|
 | `defaults` | `explore` 0.5 · `popularity` null · `n` 50 · `per_artist` 2 · `unheard` null (`tracks` \| `artists`) |
-| `storage` | `save_dir` `~/.local/share/postradio/playlists` · `feedback_file` null (= `<save_dir>/feedback/opinions.jsonl`) · `result_ttl_s` 3600 · `result_cache_size` 50 · `http_cache` `.cache/http.sqlite` · `http_ttl_s` 604800 |
+| `storage` | `save_dir` `~/.local/share/postradio/playlists` · `feedback_file` null (= `<save_dir>/feedback/opinions.jsonl`) · `result_ttl_s` 3600 · `result_cache_size` 50 · `http_cache` `.cache/http.sqlite` · `http_ttl_s` 604800 · `data_dir` `~/.local/share/postradio/data` (optional `mb_artists.sqlite`, `genre_weights.json`, `genre_artists.json`; everything works without them) |
 | `sources` | `use_lb_token` true · `history` lb (`lb` \| `file` \| `none`) · `lb_user` null · `history_file` null |
 | `feedback` | `enabled` true · `sources` [json, navidrome, lb] (priority order; the first with an opinion on an item wins) · `navidrome_url` null (`$NAVIDROME_URL`) · `lb_user` null |
 | `server` | `host` 127.0.0.1 · `port` 8765 |
@@ -74,7 +74,8 @@ that name the key.
 | Ranking | `familiarity_strength` 0.9 · `familiarity_saturation` 200 · `heard_skip_explore` 0.3 · `heard_penalty` 0.6 · `multi_source_bonus` 0.2 · `jitter` 0.3 · `shuffle_band` 10 · `max_source_share` 0.5 |
 | Taste | `love_factor` 1.5 · `hate_factor` 0.3 · `feedback_track_cap` 50 · `similar_recordings_limit` 50 · `seed_track_similar_limit` 50 · `seed_track_boost` 1.0 · `seed_track_affinity` 0.8 · `feedback_max_age_s` 900 · `history_refresh_s` 86400 · `feedback_store_depth` 5000 |
 | Provider scales | `deezer_fans_full_scale` 6.9 · `deezer_rank_full_scale` 900000 · `lb_listeners_full_scale` 5.5 · `lb_min_listener_share` 0.002 · `troi_window_width` 34 |
-| Rate limits & concurrency | `min_interval_s` (MusicBrainz 1.1, Deezer 0.12, LB 0.34, LB labs 0.1, other 0.05) · `max_in_flight` (MusicBrainz 1, Deezer 6, LB 4, LB labs 4, other 4) · `ratelimit_floor` 2 · `max_attempts` (MusicBrainz 5, other 4) · `backoff_cap_s` 30 · `fetch_workers` 8 · `http_cache_keep_s` 2592000 (30 days) |
+| Genre graph | `genre_kind_weights` (subgenre_of 1.0, influenced_by 0.5, yandex_parent 0.3) · `genre_fallback_scale` 0.2 · `genre_spread_hops` 2 · `genre_spread_decay` 0.5 |
+| Rate limits & concurrency | `min_interval_s` (MusicBrainz 1.1, Wikidata 1.0, Deezer 0.12, LB 0.34, LB labs 0.1, other 0.05) · `max_in_flight` (MusicBrainz 1, Wikidata 1, Deezer 6, LB 4, LB labs 4, other 4) · `ratelimit_floor` 2 · `max_attempts` (MusicBrainz 5, other 4) · `backoff_cap_s` 30 · `fetch_workers` 8 · `http_cache_keep_s` 2592000 (30 days) |
 
 ## Loves/hates import format
 

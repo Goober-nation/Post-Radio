@@ -22,6 +22,7 @@ from pathlib import Path
 from . import config as config_mod
 from .engine import Params, Providers, Radio
 from .errors import InvalidInput
+from .genres import GenreGraph
 from .http import Http
 from .models import Track
 from .providers import FeedbackProvider, HistoryProvider, NoHistory
@@ -32,6 +33,7 @@ from .providers.history import FileHistory, ListenBrainzHistory
 from .providers.lb_playlists import KINDS, LBCreatedFor
 from .providers.listenbrainz import LBSimilar, LBSimilarRecordings, LBTopTracks, TroiRadio, TroiTagRadio
 from .providers.musicbrainz import MusicBrainz
+from .providers.musicbrainz_store import ArtistStore, GenreIndex
 
 SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -97,6 +99,10 @@ class Recommender:
         self.history = history or self._history_from_config()
         self.feedback = feedback if feedback is not None else self._feedback_from_config()
         self.cache = ResultCache(self.cfg.storage.result_ttl_s, self.cfg.storage.result_cache_size)
+        self.store = ArtistStore.open(self.data_dir)
+        self.genre_index = None if self.store else GenreIndex.open(self.data_dir)
+        if self.store:
+            log(f"data: MusicBrainz artist store at {self.data_dir}")
         self.radio = Radio(self._providers(), self.cfg.advanced, log=log)
         self.created_for = LBCreatedFor(self.http, self.token)
 
@@ -137,7 +143,7 @@ class Recommender:
 
     def _providers(self) -> Providers:
         http, a, token = self.http, self.cfg.advanced, self.token
-        mb = MusicBrainz(http)
+        mb = MusicBrainz(http, store=self.store, index=self.genre_index)
         lb_top = LBTopTracks(http, token, a.lb_listeners_full_scale, a.lb_min_listener_share) if token else None
 
         dz = Deezer(http, known_titles=mb.recording_titles, cheap_titles=lb_top.titles if lb_top else None,
@@ -148,7 +154,7 @@ class Recommender:
         return Providers(resolver=mb, similar=[LBSimilar(http), dz, mb], tracks=tracks,
                          radios=[dz, TroiRadio(http, token, a.troi_window_width)], tagger=mb, tag_radio=tags,
                          history=self.history, feedback=self.feedback, track_similarity=LBSimilarRecordings(http),
-                         genres=[tags, dz])
+                         genres=[tags, dz] + ([mb] if self.store or self.genre_index else []))
 
     # ------------------------------------------------------------------ radio
     def generate(self, *, artist: str | None = None, track: str | None = None, artist_mbid: str | None = None,
@@ -249,6 +255,15 @@ class Recommender:
     def save_dir(self) -> Path:
         return self.cfg.path(self.cfg.storage.save_dir)
 
+    @property
+    def data_dir(self) -> Path:
+        return self.cfg.path(self.cfg.storage.data_dir)
+
+    def genre_graph(self) -> GenreGraph:
+        """The genre graph: packaged Wikidata structure, ranked by learned weights when installed."""
+        a = self.cfg.advanced
+        return GenreGraph.load(a.genre_kind_weights, a.genre_fallback_scale, data_dir=self.data_dir)
+
     def save(self, result_id: str, name: str | None = None, overwrite: bool = False) -> Path:
         res = self.get(result_id)
         if res is None:
@@ -283,6 +298,8 @@ class Recommender:
         """Release worker threads (and the cache connection). Use per-request Recommenders as `with` blocks."""
         self.radio.close()
         self.http.close()
+        if self.store:
+            self.store.close()
 
     def __enter__(self) -> "Recommender":
         return self

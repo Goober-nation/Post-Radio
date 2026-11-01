@@ -60,6 +60,27 @@ flowchart TB
 | D2 | Fetch the LB created-for listing (cached 1 h) and each playlist body. |
 | D3 | Each week becomes a separate entry in the same `ResultCache`, saveable the same way. |
 
+## Genre layer and local MusicBrainz data
+
+- `postradio/genres.py` is pure domain logic with no network. It holds a graph of the 2,178 MusicBrainz
+  genres and `spread()`, which carries a taste profile `{genre: share}` across it. Each hop passes on
+  share × edge weight × `genre_spread_decay`, and a genre keeps its best path, not the sum.
+  - Structure comes from Wikidata's subgenre and influence links (`postradio/data/genre_graph.json`,
+    CC0, shipped in the package). Each link type gets a fixed weight from `advanced.genre_kind_weights`.
+  - With `genre_weights.json` in `storage.data_dir`, learned weights rank the pairs instead: co-tag NPMI
+    over artists' MusicBrainz genres, and ListenBrainz similar-artist pairs projected onto genres.
+    Structural links then only fill in genres the data never reaches, scaled by `genre_fallback_scale`.
+  - `Recommender.genre_graph()` loads the graph. Loads are cached until a file changes.
+- `mb_artists.sqlite` in `storage.data_dir` is the optional local MusicBrainz artist store, built from
+  the official JSON dump. With it, the `MusicBrainz` adapter resolves names locally first (aliases, so
+  "Kanye West" → Ye; the best-tagged namesake wins), reads artist genres locally for `tags()`, and serves
+  `genre_artists()` as a genre source. The API is the fallback.
+  - Without the store, the small `genre_artists.json` index serves `genre_artists()` instead.
+  - With neither file, behaviour is exactly as before.
+- The Wikidata graph is built by `providers/wikidata.py` from three SPARQL queries: ancestors, labels and
+  influences. Collapsing Wikidata-only steps is part of that adapter. The data build and fetch commands
+  that produce and install these files come in a later change.
+
 ## Scoring
 
 ```

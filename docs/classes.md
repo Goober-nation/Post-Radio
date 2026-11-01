@@ -116,7 +116,7 @@ classDiagram
 
 | Adapter | ArtistResolver | SimilarArtists | TopTracks | RadioSource | Tagger | TagRadio | GenreSource | TrackSimilarity | HistoryProvider | FeedbackProvider |
 |---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
-| `MusicBrainz` | ✓ | ✓ (hop 1 only) | | | ✓ | | | | | |
+| `MusicBrainz` (+ optional local store) | ✓ | ✓ (hop 1 only) | | | ✓ | | ✓ (store or index only) | | | |
 | `Deezer` | | ✓ | ✓ | ✓ | | | ✓ | | | |
 | `LBSimilar` | | ✓ | | | | | | | | |
 | `LBTopTracks` (token) | | | ✓ | | | | | | | |
@@ -128,7 +128,10 @@ classDiagram
 
 | Module | Classes |
 |---|---|
-| `providers/musicbrainz.py` | `MusicBrainz` |
+| `providers/musicbrainz.py` | `MusicBrainz` (store first, API fallback; `genre_names()` for the data build) |
+| `providers/musicbrainz_store.py` | `ArtistStore` (read side of `mb_artists.sqlite`), `GenreIndex` (`genre_artists.json`), `import_dump()` (builds the store from the JSON dump) |
+| `providers/wikidata.py` | `Wikidata` (genre graph via SPARQL; data build only, no interface) |
+| `genres.py` (not a provider) | `GenreGraph`, `GenreNode`, `GenreScore`; pure functions `spread`, `cotag`, `similar`, `combine`, `yandex_edges` |
 | `providers/deezer.py` | `Deezer` (Deezer identity check: free LB titles first, MusicBrainz titles only when needed) |
 | `providers/listenbrainz.py` | `LBSimilar`, `LBTopTracks`, `LBSimilarRecordings`, `TroiRadio`, `TroiTagRadio`, `LBMetadata` |
 | `providers/lb_playlists.py` | `LBCreatedFor` (Weekly Exploration / Jams; no interface, called directly) |
@@ -187,6 +190,7 @@ classDiagram
         generate()
         deep_cuts()
         import_feedback()
+        genre_graph()
         save()
         list_saved()
         close()

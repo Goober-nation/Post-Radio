@@ -6,7 +6,7 @@ from pathlib import Path
 
 import yaml
 
-from .brand import CONFIG_ENV, DEFAULT_SAVE_DIR
+from .brand import CONFIG_ENV, DEFAULT_DATA_DIR, DEFAULT_SAVE_DIR
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -29,6 +29,7 @@ class Storage:
     result_cache_size: int = 50  # ...up to this many
     http_cache: str = ".cache/http.sqlite"  # relative paths resolve against the repo root
     http_ttl_s: int = 7 * 86400
+    data_dir: str = DEFAULT_DATA_DIR  # optional data: mb_artists.sqlite, genre_weights.json, genre_artists.json
 
 
 @dataclass
@@ -130,16 +131,25 @@ class Advanced:
     lb_listeners_full_scale: float = 5.5  # log10 LB listeners of a superstar
     lb_min_listener_share: float = 0.002  # drop recordings below this share of the artist's top track
     troi_window_width: int = 34
+    # genre graph (postradio/genres.py)
+    genre_kind_weights: dict[str, float] = field(default_factory=lambda: {
+        "subgenre_of": 1.0,  # Wikidata P279
+        "influenced_by": 0.5,  # Wikidata P737/P941
+        "yandex_parent": 0.3})  # Yandex genre tree
+    genre_fallback_scale: float = 0.2  # with learned weights, structural edges fill uncovered genres at this scale
+    genre_spread_hops: int = 2  # a taste profile spreads this many hops over the genre graph...
+    genre_spread_decay: float = 0.5  # ...losing this factor per hop (times the edge weight)
     # rate limits (per host; "default" covers the rest)
     min_interval_s: dict[str, float] = field(default_factory=lambda: {
         "musicbrainz.org": 1.1,  # hard limit 1 req/s
+        "query.wikidata.org": 1.0,  # data build only; heavy queries, be polite
         "api.deezer.com": 0.12,  # documented ~50 req / 5 s
         "api.listenbrainz.org": 0.34,  # 30 req / 10 s window, also tracked via X-RateLimit headers
         "labs.api.listenbrainz.org": 0.1,
         "default": 0.05})
     max_in_flight: dict[str, int] = field(default_factory=lambda: {
-        "musicbrainz.org": 1, "api.deezer.com": 6, "api.listenbrainz.org": 4, "labs.api.listenbrainz.org": 4,
-        "default": 4})
+        "musicbrainz.org": 1, "query.wikidata.org": 1, "api.deezer.com": 6, "api.listenbrainz.org": 4,
+        "labs.api.listenbrainz.org": 4, "default": 4})
     max_attempts: dict[str, int] = field(default_factory=lambda: {"musicbrainz.org": 5, "default": 4})
     ratelimit_floor: int = 2  # LB: when X-RateLimit-Remaining drops to this, wait for the window to reset
     fetch_workers: int = 8  # threads for independent fetches (catalogues, neighbours, similar recordings)

@@ -90,6 +90,23 @@ cache and storage. `server.py` and `cli.py` are thin wrappers. `http.py` is a SQ
 with per-host throttling and backoff. MusicBrainz is held to 1 req/s and backs off exponentially on
 503 rather than failing.
 
+## Genre graph and local data
+
+`postradio/genres.py` holds a graph of the 2,178 MusicBrainz genres, built from Wikidata (CC0, shipped in
+the package). Learned genre-pair weights rank it when they are installed. Optional files go in
+`storage.data_dir` (`~/.local/share/postradio/data`):
+- `mb_artists.sqlite`: the MusicBrainz artist store from the JSON dump. Names and aliases resolve
+  locally ("Kanye West" → Ye), artist genres need no API calls, and genre seeds get MusicBrainz artists.
+- `genre_weights.json`: the learned genre-pair weights.
+- `genre_artists.json`: a small genre → artists index for users without the store.
+
+These files are CC BY-NC-SA 3.0 (MusicBrainz genre data). Without them, nothing changes. See
+[postradio/data/README.md](postradio/data/README.md) for the licences.
+
+## Licence
+
+Code: MIT ([LICENSE](LICENSE)). Data files: see above.
+
 ## Cost (cold cache, Radiohead, explore 0.6, n=50, token + LB user)
 
 About 2 s of CPU, under 100 MB RAM, and around 275 requests, mostly sequential, in about 130 s. About 23 s of

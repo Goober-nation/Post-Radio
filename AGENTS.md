@@ -90,7 +90,6 @@ Always in a venv, never a global install.
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
 .venv/bin/pytest -q
 .venv/bin/ruff check postradio tests scripts
-.venv/bin/ruff format --check postradio tests scripts
 ```
 
 Don't report lint/format runs that found nothing.

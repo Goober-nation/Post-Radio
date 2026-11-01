@@ -1,7 +1,9 @@
 Metadata-Version: 2.4
 Name: postradio
 Version: 0.1.0
+License: MIT
 Requires-Python: >=3.11
+License-File: LICENSE
 Requires-Dist: troi>=2026.9
 Requires-Dist: requests
 Requires-Dist: pyyaml
@@ -13,3 +15,4 @@ Requires-Dist: pytest; extra == "dev"
 Requires-Dist: ruff; extra == "dev"
 Requires-Dist: fastapi; extra == "dev"
 Requires-Dist: httpx; extra == "dev"
+Dynamic: license-file

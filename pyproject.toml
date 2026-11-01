@@ -2,6 +2,7 @@
 name = "postradio"
 dynamic = ["version"]
 requires-python = ">=3.11"
+license = { text = "MIT" }
 dependencies = ["troi>=2026.9", "requests", "pyyaml"]
 
 
@@ -26,3 +27,6 @@ version = { attr = "postradio.brand.VERSION" }  # single source: postradio/brand
 
 [tool.setuptools.packages.find]
 include = ["postradio*"]
+
+[tool.setuptools.package-data]
+postradio = ["data/*.json", "data/*.md"]

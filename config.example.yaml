@@ -15,6 +15,7 @@ storage:
   result_cache_size: 50
   http_cache: .cache/http.sqlite
   http_ttl_s: 604800
+  data_dir: ~/.local/share/postradio/data
 sources:
   use_lb_token: true
   history: lb
@@ -106,14 +107,23 @@ advanced:
   lb_listeners_full_scale: 5.5
   lb_min_listener_share: 0.002
   troi_window_width: 34
+  genre_kind_weights:
+    subgenre_of: 1.0
+    influenced_by: 0.5
+    yandex_parent: 0.3
+  genre_fallback_scale: 0.2
+  genre_spread_hops: 2
+  genre_spread_decay: 0.5
   min_interval_s:
     musicbrainz.org: 1.1
+    query.wikidata.org: 1.0
     api.deezer.com: 0.12
     api.listenbrainz.org: 0.34
     labs.api.listenbrainz.org: 0.1
     default: 0.05
   max_in_flight:
     musicbrainz.org: 1
+    query.wikidata.org: 1
     api.deezer.com: 6
     api.listenbrainz.org: 4
     labs.api.listenbrainz.org: 4
