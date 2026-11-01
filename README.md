@@ -36,7 +36,7 @@ with Recommender(home="/data/postradio") as rec:            # one folder for cac
 ```
 Nothing is stored unless asked (`keep=True` holds a result for `get()` / `save()`), and the library reads no
 environment variables or config files by itself. See [docs/configuration.md](docs/configuration.md) for
-folders, errors and the result types.
+folders, errors and the result types, and [docs/library.md](docs/library.md) for using it from another app.
 
 HTTP (`postradio serve`): `POST /radio`, `GET /deep-cuts`, `GET /results/{id}`, `POST /results/{id}/save`,
 `GET /saved`, `GET /saved/{name}`.

@@ -192,6 +192,24 @@ How Post-Vinyl (`rebuild/base`) handles ListenBrainz tokens, and what follows fo
   checked every gap between thread wake-ups. They now check the total span, which is what proves the
   shared schedule. 40 full runs then passed.
 
+### Step 5 done: integration tests, library doc, live check
+
+- `tests/test_integration.py` runs the same scenarios through Python, CLI, HTTP sync and HTTP jobs, with fake
+  outside services and everything else real:
+  - radio gives identical tracks through all four entry points;
+  - flow from config-file taste (imported loves via the CLI) equals flow from the same loves as a
+    per-call `Listener` (library and HTTP);
+  - a dry preview's path equals the real run's;
+  - the same error kinds come out everywhere;
+  - a CLI run writes only inside `$POSTRADIO_HOME`.
+- Mutation check: dropping the listener's likes in `api._radio_for` makes the flow scenario fail.
+- Live (cloud, real services, store, LB token): `POST /jobs/flow` with 9 dated likes took 17 s cold, with
+  path hip hop → pop soul → contemporary r&b → r&b. 12/12 tracks have an artist MBID. The token is in
+  neither the cache file nor the result. Only `cache/` was written under the home.
+- `docs/library.md`: the host-app guide.
+
+Phase 4.5 is complete. Next: phase 5 (webpage switch-over), which uses this library surface.
+
 ## Dry runs and seeds (user request, 2026-11-01)
 
 - `radio --dry`: the seed and the artist graph by hop, no tracks. `flow --dry`: the profile and the genre
