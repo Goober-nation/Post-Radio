@@ -111,6 +111,32 @@ Planned work (to confirm order):
   `Recommender`.
 - A **library usage doc** for Post-Vinyl.
 
+Storage layout (discussed): one `home` folder per deployment.
+- Precedence: `Recommender(home=...)`, then `$POSTRADIO_HOME`, then user/system directories.
+- Layout: `<home>/config.yaml`, `cache/`, `data/`, `saved/`.
+- Relative config paths resolve against the config file's own folder.
+- As a library, nothing is read implicitly from the working directory or the repo.
+- Post-Vinyl mounts e.g. `./postradio:/data/postradio` in its compose project. All users share the store
+  and cache; per-user taste comes through the call.
+
+How Post-Vinyl (`rebuild/base`) handles ListenBrainz tokens, and what follows for Post-Radio:
+- **Per user, entered in the app.** Checked with LB `validate-token` before storing (invalid 422, LB down
+  503). Stored Fernet-encrypted (`users.lb_token_enc`, key `PV_SECRET_KEY`) and write-only. Decrypted just
+  in time and passed per call (`token=` on its LB client). No `.env` migration: `LISTENBRAINZ_TOKEN` is
+  being removed from its env. Tagging lookups use the admin's token today.
+- **Post-Radio's planned role** there (architecture.md §7): a `clients/postradio.py` (ABC + fake);
+  `services/recs` reads taste from Navidrome, asks Post-Radio, then `catalog.resolve()` → proposals
+  (worker `rec_puller`).
+- Consequences for Post-Radio:
+  1. The token is a per-call argument; the `$LISTENBRAINZ_TOKEN` fallback is CLI-only.
+  2. The token is never stored, logged or returned (add a test). The shared cache is fine: the
+     token-only endpoint returns public data.
+  3. Per-call taste accepts **data** (dated likes and plays with MBIDs), so Post-Vinyl needn't hand over
+     Navidrome credentials. Provider objects stay available for the CLI and simple callers.
+  4. Errors tell an auth failure apart from a source being unavailable, so Post-Vinyl can map them to
+     422 and 503.
+  5. Results carry IDs `catalog.resolve()` can use (recording MBIDs where possible) and are easy to fake.
+
 ## Dry runs and seeds (user request, 2026-11-01)
 
 - `radio --dry`: the seed and the artist graph by hop, no tracks. `flow --dry`: the profile and the genre
