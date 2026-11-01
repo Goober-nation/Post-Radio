@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from ..brand import SUBSONIC_CLIENT
 from ..config import Advanced
+from ..errors import SourceAuthError, SourceUnavailable
 from ..http import Http
 from ..models import Feedback, rating_score
 from . import FeedbackProvider, parse_rows, seg, time_bucket
@@ -77,7 +78,9 @@ class NavidromeFeedback(FeedbackProvider):
                           cache_params=params, valid=_subsonic_ok)
         r = (d or {}).get("subsonic-response") or {}
         if r.get("status") != "ok":
-            raise RuntimeError(f"navidrome {endpoint}: {(r.get('error') or {}).get('message', 'no response')}")
+            err = r.get("error") or {}
+            msg = f"navidrome {endpoint}: {err.get('message', 'no response')}"
+            raise SourceAuthError(msg) if err.get("code") in (40, 41, 42, 43, 44) else SourceUnavailable(msg)
         return r
 
     def load(self) -> list[Feedback]:

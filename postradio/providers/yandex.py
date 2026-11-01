@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from functools import cache
 from pathlib import Path
 
+from ..errors import InvalidInput, SourceUnavailable
 from ..http import Http
 from ..models import Artist, Edge, Feedback, History, Play, norm
 from . import FeedbackProvider, HistoryProvider, SimilarArtists, Tagger, parse_rows, seg
@@ -28,10 +29,6 @@ OLD = re.compile(r"https?://music\.yandex\.[a-z]+/users/([^/?#\s]+)/playlists/(\
 IFRAME = re.compile(r"music\.yandex\.[a-z]+/iframe/(?:#/)?playlist/([^/\"]+)/(\d+)")
 
 
-class YandexError(ValueError):
-    """A bad playlist link, or a playlist that can't be loaded."""
-
-
 def playlist_path(url: str) -> str:
     """API path for a playlist link: new-style /playlists/<uuid>, old /users/<owner>/playlists/<kind>, or an
     embed iframe."""
@@ -40,7 +37,7 @@ def playlist_path(url: str) -> str:
         return f"/playlist/{seg(m.group(1))}"
     if m := OLD.search(url) or IFRAME.search(url):
         return f"/users/{seg(m.group(1))}/playlists/{seg(m.group(2))}"
-    raise YandexError("not a Yandex Music playlist link (https://music.yandex.ru/playlists/… or "
+    raise InvalidInput("not a Yandex Music playlist link (https://music.yandex.ru/playlists/… or "
                       "https://music.yandex.ru/users/<owner>/playlists/<number>)")
 
 
@@ -96,7 +93,7 @@ class YandexClient:
         path = playlist_path(url)
         data = self._get(path)
         if not isinstance(data, dict):
-            raise YandexError("Yandex didn't return the playlist (private, missing, or blocked in this region)")
+            raise SourceUnavailable("Yandex didn't return the playlist (private, missing, or blocked in this region)")
         items = list(data.get("tracks") or [])
         total = int(data.get("trackCount") or len(items))
         per = int((data.get("pager") or {}).get("perPage") or 0)

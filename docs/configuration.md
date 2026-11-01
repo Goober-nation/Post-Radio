@@ -28,6 +28,55 @@ doesn't override variables already set.
 `rng_seed` in the result). Passing it back repeats the run: the same path, and the same playlist while the
 cached API answers stay the same. Dry runs report it too, so a preview you like can be run for real.
 
+## Folders
+
+Post-Radio never writes into its install location or the working directory.
+
+| folder | holds | if lost |
+|---|---|---|
+| `cache/` | API response cache (`http.sqlite`) | Harmless; refills |
+| `data/` | MusicBrainz store and genre files (`postradio data fetch`) | Re-downloadable |
+| `state/` | Saved playlists, imported loves | User data: back it up |
+
+- **Library:**
+  - `Recommender(home=...)` puts all three under one folder.
+  - `cache_dir=` / `data_dir=` / `state_dir=` override single ones, e.g. a shared read-only store
+    (`data_dir="/store"`, mounted `:ro`).
+  - Without either, the user's own folders are used: `~/.cache/postradio`, `~/.local/share/postradio`
+    (`data/`, `playlists/`).
+  - Precedence: explicit argument > the config's `storage.*` path > `home` > user folders.
+- **CLI and `postradio serve`:**
+  - `$POSTRADIO_HOME` sets the home.
+  - The config file is the first found of: `--config`, `$POSTRADIO_CONFIG`, `$POSTRADIO_HOME/config.yaml`,
+    `./config.yaml`, `~/.config/postradio/config.yaml`.
+  - `.env` is read from the working directory.
+- **Docker / compose:**
+  - A host app (Post-Vinyl) passes `home=` from its own data volume, e.g. `/data/postradio`, so no
+    `POSTRADIO_*` variables are needed.
+  - A standalone container sets `POSTRADIO_HOME=/data` and mounts a host folder there.
+
+## Environment
+
+Only the CLI and the standalone server read environment variables. They pass `os.environ` to
+`Recommender(env=...)`; the library reads none by default. Variables: `LISTENBRAINZ_TOKEN`,
+`LISTENBRAINZ_USERNAME`, `NAVIDROME_URL`, `NAVIDROME_USERNAME`, `NAVIDROME_PASSWORD`, plus `POSTRADIO_HOME`
+and `POSTRADIO_CONFIG` for finding files. A library caller passes `token=` (and later per call) instead.
+
+## Errors
+
+Every error raised on purpose is a `postradio.errors.PostRadioError`:
+
+| class | meaning | HTTP |
+|---|---|---|
+| `InvalidInput` | Malformed request: range, MBID, link, unknown stream or step | 422 |
+| `NotFound` | The seed, release, result or saved playlist doesn't exist | 404 |
+| `SourceAuthError` | A credential was refused (Navidrome login; later LB tokens) | 422 |
+| `SourceUnavailable` | A service is unreachable, blocked (Yandex 451) or answered garbage | 503 |
+| `ConfigError` | Bad config file or setting | 500 |
+| `DataError` | No data release, or a checksum mismatch | 500 |
+
+`InvalidInput`, `NotFound`, `ConfigError` and `DataError` also subclass `ValueError`.
+
 ## HTTP API: `postradio serve` (FastAPI, OpenAPI at `/docs`)
 
 | Endpoint | Does |
@@ -43,6 +92,10 @@ cached API answers stay the same. Dry runs report it too, so a preview you like 
 | `GET /saved`, `GET /saved/{name}` | List saved playlists, or get one |
 
 ## Python API
+
+Results are stored nowhere unless asked: pass `keep=True` to `generate` / `flow` / `deep_cuts` to hold one
+in memory under a `result_id` (for `get()` and `save()`). The CLI does this for `--save`, and the server does
+it always.
 
 ```python
 from postradio.api import Recommender
@@ -71,7 +124,7 @@ that name the key.
 | Section | Keys (default) |
 |---|---|
 | `defaults` | `explore` 0.5 · `popularity` null · `n` 50 · `per_artist` 2 · `unheard` null (`tracks` \| `artists`) |
-| `storage` | `save_dir` `~/.local/share/postradio/playlists` · `feedback_file` null (= `<save_dir>/feedback/opinions.jsonl`) · `result_ttl_s` 3600 · `result_cache_size` 50 · `http_cache` `.cache/http.sqlite` · `http_ttl_s` 604800 · `data_dir` `~/.local/share/postradio/data` (optional `mb_artists.sqlite`, `genre_weights.json`, `genre_artists.json`; everything works without them) |
+| `storage` | `save_dir` null (= `<state>/playlists`) · `feedback_file` null (= `<save_dir>/feedback/opinions.jsonl`) · `result_ttl_s` 3600 · `result_cache_size` 50 · `http_cache` null (= `<cache>/http.sqlite`) · `http_ttl_s` 604800 · `data_dir` null (= `<home>/data`: optional `mb_artists.sqlite`, `genre_weights.json`, `genre_artists.json`; everything works without them). Relative paths resolve against the config file's folder. |
 | `sources` | `use_lb_token` true · `history` lb (`lb` \| `file` \| `yandex` \| `none`) · `lb_user` null · `history_file` null · `yandex_playlist` null (a public Yandex Music playlist link) · `yandex_tracks` null (newest N only; null = all) |
 | `feedback` | `enabled` true · `sources` [json, yandex, navidrome, lb] (priority order; the first with an opinion on an item wins) · `navidrome_url` null (`$NAVIDROME_URL`) · `lb_user` null |
 | `server` | `host` 127.0.0.1 · `port` 8765 |

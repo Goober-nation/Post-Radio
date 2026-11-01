@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from postradio import config as config_mod
 from postradio.api import Recommender, ResultCache, slug
 from postradio.engine import Providers, Radio
+from postradio.errors import NotFound
 from postradio.server import create_app
 
 
@@ -40,7 +41,8 @@ def test_config_partial_yaml_and_unknown_keys(tmp_path):
 
 def test_example_config_matches_defaults():
     data = yaml.safe_load((config_mod.ROOT / "config.example.yaml").read_text())
-    assert config_mod.load(config_mod.ROOT / "config.example.yaml") == config_mod.Config()
+    loaded = config_mod.load(config_mod.ROOT / "config.example.yaml")
+    assert dataclasses.replace(loaded, base_dir=None) == config_mod.Config()
     assert set(data) == {"defaults", "storage", "sources", "feedback", "server", "advanced"}
 
 
@@ -56,7 +58,8 @@ def test_result_cache_ttl_and_lru(monkeypatch):
 
 
 def test_generate_uses_config_defaults_and_save_roundtrip(rec):
-    res = rec.generate(artist="Seed")
+    assert rec.generate(artist="Seed")["result_id"] is None  # nothing stored unless asked
+    res = rec.generate(artist="Seed", keep=True)
     assert len(res["tracks"]) <= rec.cfg.defaults.n and res["explore"] == rec.cfg.defaults.explore
     assert rec.get(res["result_id"]) is res
     assert "_seed_e0.50_pauto" in res["default_name"]
@@ -68,7 +71,7 @@ def test_generate_uses_config_defaults_and_save_roundtrip(rec):
         rec.save(res["result_id"], "My Fav/../x")
     assert {s["name"] for s in rec.list_saved()} == {p.stem, named.stem}
     assert rec.load_saved(p.stem)["tracks"] == res["tracks"]
-    with pytest.raises(KeyError):
+    with pytest.raises(NotFound):
         rec.save("nope")
 
 

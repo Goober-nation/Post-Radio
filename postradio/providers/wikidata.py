@@ -8,6 +8,7 @@ are uneven, so treat edges as "related", not as a strict hierarchy."""
 import time
 from collections import defaultdict
 
+from ..errors import SourceUnavailable
 from ..http import Http
 from . import parse_rows
 
@@ -35,7 +36,7 @@ class Wikidata:
                           timeout=180)
         rows = ((d or {}).get("results") or {}).get("bindings")
         if not isinstance(rows, list):
-            raise RuntimeError("Wikidata SPARQL returned no results (timeout or rate limit?)")
+            raise SourceUnavailable("Wikidata SPARQL returned no results (timeout or rate limit?)")
         return rows
 
     def genre_graph(self, mb_genres: dict[str, str]) -> dict:

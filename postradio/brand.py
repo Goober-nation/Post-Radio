@@ -9,8 +9,7 @@ ENV_PREFIX = "POSTRADIO"
 
 USER_AGENT = f"{NAME}/{VERSION} ( {CONTACT} )"
 CONFIG_ENV = f"{ENV_PREFIX}_CONFIG"  # env var pointing at the YAML config
-DEFAULT_SAVE_DIR = f"~/.local/share/{NAME}/playlists"
-DEFAULT_DATA_DIR = f"~/.local/share/{NAME}/data"  # optional downloaded data (artist store, genre weights)
+HOME_ENV = f"{ENV_PREFIX}_HOME"  # CLI / standalone server only: one folder for config, cache, data, state
 DATA_RELEASE_REPO = "Goober-nation/Post-Radio"  # GitHub repo whose data-YYYY-MM pre-releases carry the data
 POOL_PREFIX = f"{NAME}-fetch"  # worker thread names
 SUBSONIC_CLIENT = NAME  # 'c' parameter Navidrome logs for our requests

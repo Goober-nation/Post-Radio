@@ -7,7 +7,24 @@ from pydantic import BaseModel, Field
 
 from .api import Recommender
 from .brand import DISPLAY_NAME
-from .errors import NotFound
+from .errors import (
+    ConfigError,
+    DataError,
+    InvalidInput,
+    NotFound,
+    PostRadioError,
+    SourceAuthError,
+    SourceUnavailable,
+)
+
+STATUS = [(NotFound, 404), (InvalidInput, 422), (SourceAuthError, 422), (SourceUnavailable, 503),
+          (ConfigError, 500), (DataError, 500)]
+
+
+def http_error(e: Exception) -> HTTPException:
+    """One mapping from Post-Radio errors to HTTP codes, for every endpoint."""
+    code = next((c for cls, c in STATUS if isinstance(e, cls)), 500)
+    return HTTPException(code, str(e))
 
 
 class RadioRequest(BaseModel):
@@ -94,32 +111,30 @@ def create_app(rec: Recommender | None = None) -> FastAPI:
         if sum(x is not None for x in seeds) != 1:
             raise HTTPException(422, "give exactly one of artist, track, artist_mbid, recording_mbid, genres")
         try:
-            return rec.generate(**req.model_dump())
-        except NotFound as e:
-            raise HTTPException(404, str(e)) from e
-        except ValueError as e:  # InvalidInput and any other validation error
-            raise HTTPException(422, str(e)) from e
+            return rec.generate(**req.model_dump(), keep=not req.dry)
+        except PostRadioError as e:
+            raise http_error(e) from e
 
     @app.post("/flow")
     def flow(req: FlowRequest):
         try:
-            return rec.flow(**req.model_dump())
-        except ValueError as e:
-            raise HTTPException(422, str(e)) from e
+            return rec.flow(**req.model_dump(), keep=not req.dry)
+        except PostRadioError as e:
+            raise http_error(e) from e
 
     @app.get("/profile")
     def profile():
         try:
             return rec.profile()
-        except ValueError as e:
-            raise HTTPException(422, str(e)) from e
+        except PostRadioError as e:
+            raise http_error(e) from e
 
     @app.get("/deep-cuts")
     def deep_cuts(user: str | None = None, kind: str = "exploration"):
         try:
-            return rec.deep_cuts(user, kind)
-        except ValueError as e:
-            raise HTTPException(422, str(e)) from e
+            return rec.deep_cuts(user, kind, keep=True)
+        except PostRadioError as e:
+            raise http_error(e) from e
 
     @app.get("/results/{result_id}")
     def result(result_id: str):
@@ -132,8 +147,8 @@ def create_app(rec: Recommender | None = None) -> FastAPI:
     def save(result_id: str, req: SaveRequest):
         try:
             return {"saved_as": rec.save(result_id, req.name, req.overwrite).stem}
-        except KeyError as e:
-            raise HTTPException(404, str(e)) from e
+        except PostRadioError as e:
+            raise http_error(e) from e
         except FileExistsError as e:
             raise HTTPException(409, f"{e} exists; pass overwrite=true") from e
 
@@ -141,8 +156,8 @@ def create_app(rec: Recommender | None = None) -> FastAPI:
     def import_feedback(body: FeedbackImport):
         try:
             return rec.import_feedback(body.model_dump(exclude_none=True))
-        except ValueError as e:
-            raise HTTPException(422, str(e)) from e
+        except PostRadioError as e:
+            raise http_error(e) from e
 
     @app.get("/feedback/batches")
     def feedback_batches():
@@ -156,7 +171,7 @@ def create_app(rec: Recommender | None = None) -> FastAPI:
     def load_saved(name: str):
         try:
             return rec.load_saved(name)
-        except FileNotFoundError as e:
-            raise HTTPException(404, "no such saved playlist") from e
+        except PostRadioError as e:
+            raise http_error(e) from e
 
     return app

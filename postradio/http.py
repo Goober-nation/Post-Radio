@@ -18,9 +18,9 @@ import requests
 
 from .brand import USER_AGENT
 from .config import Advanced
+from .errors import SourceUnavailable
 
 EVICT_EVERY = 1000  # writes between eviction sweeps
-CACHE_PATH = Path(__file__).resolve().parent.parent / ".cache" / "http.sqlite"
 
 
 class _HostSchedule:
@@ -47,7 +47,7 @@ def _schedule(host: str, gap: float, in_flight: int) -> _HostSchedule:
 
 
 class Http:
-    def __init__(self, cache_path: Path = CACHE_PATH, ttl: int = 7 * 86400, offline: bool = False,
+    def __init__(self, cache_path: Path, ttl: int = 7 * 86400, offline: bool = False,
                  min_interval: dict[str, float] | None = None, max_attempts: dict[str, int] | None = None,
                  backoff_cap_s: float = Advanced.backoff_cap_s, max_in_flight: dict[str, int] | None = None,
                  ratelimit_floor: int = Advanced.ratelimit_floor, keep_s: int = Advanced.http_cache_keep_s):
@@ -224,7 +224,7 @@ class Http:
         """Stream a large file to disk (never cached, never held in memory), resuming a partial `dest`.
         Raises on failure: a half-downloaded file is kept for the next resume."""
         if self.offline:
-            raise RuntimeError(f"offline: can't download {url}")
+            raise SourceUnavailable(f"offline: can't download {url}")
         host = urlparse(url).hostname or ""
         have = dest.stat().st_size if resume and dest.exists() else 0
         hdrs = {**(headers or {}), **({"Range": f"bytes={have}-"} if have else {})}

@@ -8,14 +8,13 @@
 Results live in an in-process TTL cache until saved; nothing touches disk unless save() is called.
 """
 import json
-import os
 import random
 import re
 import threading
 import time
 import uuid
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -23,7 +22,7 @@ from pathlib import Path
 from . import config as config_mod
 from . import data as data_mod
 from .engine import Params, Providers, Radio
-from .errors import InvalidInput
+from .errors import ConfigError, InvalidInput, NotFound
 from .genres import GenreGraph
 from .http import Http
 from .models import Track
@@ -82,27 +81,42 @@ def track_json(t: Track) -> dict:
 
 
 class Recommender:
-    def __init__(self, cfg: config_mod.Config | None = None, *, token: str | None = None, lb_user: str | None = None,
+    def __init__(self, cfg: config_mod.Config | None = None, *, home: str | Path | None = None,
+                 cache_dir: str | Path | None = None, data_dir: str | Path | None = None,
+                 state_dir: str | Path | None = None, token: str | None = None, lb_user: str | None = None,
                  history: HistoryProvider | None = None, feedback: list[FeedbackProvider] | None = None,
-                 offline: bool = False,
+                 offline: bool = False, env: Mapping[str, str] | None = None,
                  log: Callable[[str], None] = lambda _m: None):
-        """token/lb_user default to $LISTENBRAINZ_TOKEN / $LISTENBRAINZ_USERNAME (subject to cfg.sources).
-        Pass `history` / `feedback` to supply listening history or loves/hates from anywhere
-        (e.g. a multi-scrobbler/Maloja adapter); otherwise both come from config."""
-        self.cfg = cfg or config_mod.load()
-        s, a = self.cfg.sources, self.cfg.advanced
-        # token: None = take $LISTENBRAINZ_TOKEN, "" = explicitly tokenless
-        self.token = (token if token is not None else os.environ.get("LISTENBRAINZ_TOKEN")) or None
+        """cfg: a Config (config.load(path) reads a file); None = built-in defaults.
+
+        Folders: explicit cache_dir / data_dir / state_dir > the config's storage paths > `home` (cache/,
+        data/, state/ under it) > the user's own folders. Nothing is read from or written to the install
+        location or the working directory.
+
+        env: where to read LISTENBRAINZ_TOKEN, LISTENBRAINZ_USERNAME and NAVIDROME_* from. The library reads
+        no environment by default (None = {}); the CLI passes os.environ. `token` and `lb_user` win over it;
+        token="" means explicitly tokenless.
+
+        Pass `history` / `feedback` to supply listening history or loves/hates from anywhere (e.g. a
+        multi-scrobbler/Maloja adapter); otherwise both come from config."""
+        self.cfg = cfg or config_mod.Config()
+        self.env = dict(env or {})
+        s, a, st = self.cfg.sources, self.cfg.advanced, self.cfg.storage
+        self.dirs = config_mod.resolve_dirs(home, cache_dir, data_dir, state_dir)
+        self._base = Path(home).expanduser() if home else self.dirs.state  # relative paths in a code-built Config
+        if data_dir is None and st.data_dir:
+            self.dirs = replace(self.dirs, data=self.cfg.path(st.data_dir, self._base))
+        self.token = (token if token is not None else self.env.get("LISTENBRAINZ_TOKEN")) or None
         if not s.use_lb_token:
             self.token = None
-        self.lb_user = lb_user or s.lb_user or os.environ.get("LISTENBRAINZ_USERNAME") or None
-        self.http = Http(self.cfg.path(self.cfg.storage.http_cache), ttl=self.cfg.storage.http_ttl_s, offline=offline,
+        self.lb_user = lb_user or s.lb_user or self.env.get("LISTENBRAINZ_USERNAME") or None
+        http_path = self.cfg.path(st.http_cache, self._base) if st.http_cache else self.dirs.cache / "http.sqlite"
+        self.http = Http(http_path, ttl=st.http_ttl_s, offline=offline,
                          min_interval=a.min_interval_s, max_attempts=a.max_attempts, backoff_cap_s=a.backoff_cap_s,
                          max_in_flight=a.max_in_flight, ratelimit_floor=a.ratelimit_floor, keep_s=a.http_cache_keep_s)
         self.log, self.offline = log, offline
-        st = self.cfg.storage
-        store_path = (self.cfg.path(st.feedback_file) if st.feedback_file
-                      else self.cfg.path(st.save_dir) / "feedback" / "opinions.jsonl")
+        store_path = (self.cfg.path(st.feedback_file, self._base) if st.feedback_file
+                      else self.save_dir / "feedback" / "opinions.jsonl")
         self.feedback_store = JsonFeedbackStore(store_path, self.cfg.advanced.feedback_store_depth)
         s_ = self.cfg.sources
         self.yandex = (YandexLikes(self.http, s_.yandex_playlist, s_.yandex_tracks, log=log)
@@ -121,12 +135,12 @@ class Recommender:
         s = self.cfg.sources
         if s.history == "yandex":
             if not self.yandex:
-                raise ValueError("sources.history = yandex needs sources.yandex_playlist")
+                raise ConfigError("sources.history = yandex needs sources.yandex_playlist")
             return self.yandex.as_history()
         if s.history == "file":
             if not s.history_file:
-                raise ValueError("sources.history = file needs sources.history_file")
-            return FileHistory(self.cfg.path(s.history_file))
+                raise ConfigError("sources.history = file needs sources.history_file")
+            return FileHistory(self.cfg.path(s.history_file, self._base))
         if s.history == "lb" and self.lb_user:
             return ListenBrainzHistory(self.http, self.lb_user, self.token,
                                        refresh_s=self.cfg.advanced.history_refresh_s)
@@ -153,15 +167,15 @@ class Recommender:
                 if self.yandex:
                     out.append(self.yandex)
             elif name == "navidrome":
-                url = f.navidrome_url or os.environ.get("NAVIDROME_URL")
-                user, pw = os.environ.get("NAVIDROME_USERNAME"), os.environ.get("NAVIDROME_PASSWORD")
+                url = f.navidrome_url or self.env.get("NAVIDROME_URL")
+                user, pw = self.env.get("NAVIDROME_USERNAME"), self.env.get("NAVIDROME_PASSWORD")
                 if url and user and pw:
                     out.append(NavidromeFeedback(self.http, url, user, pw, a.feedback_max_age_s))
                 elif url:  # configured but unusable: say why; unconfigured is simply skipped
                     self.log("feedback: navidrome skipped (needs feedback.navidrome_url or $NAVIDROME_URL, "
                              "$NAVIDROME_USERNAME, $NAVIDROME_PASSWORD)")
             else:
-                raise ValueError(f"feedback.sources: unknown source '{name}' (json | yandex | navidrome | lb)")
+                raise ConfigError(f"feedback.sources: unknown source '{name}' (json | yandex | navidrome | lb)")
         return out
 
     def _providers(self) -> Providers:
@@ -188,7 +202,8 @@ class Recommender:
                  recording_mbid: str | None = None, genres: list[str] | None = None, genre_op: str = "or",
                  explore: float | None = None, popularity: float | None = None, n: int | None = None,
                  per_artist: int | None = None, rng_seed: int | None = None, auto_popularity: bool = False,
-                 unheard: str | None = None, mix: dict[str, float] | None = None, dry: bool = False) -> dict:
+                 unheard: str | None = None, mix: dict[str, float] | None = None, dry: bool = False,
+                 keep: bool = False) -> dict:
         """Unset knobs fall back to config defaults. auto_popularity=True ignores a configured default
         popularity so it follows explore. Without rng_seed a seed is picked and reported (`rng_seed` in the
         result), so any run can be repeated. dry=True previews the artist graph without picking tracks."""
@@ -211,10 +226,11 @@ class Recommender:
         if dry:
             return res
         res["rng_seed"] = rng_seed
-        return self._remember("radio", res, default_name=self._radio_name(res))
+        return self._remember("radio", res, self._radio_name(res), keep)
 
     def flow(self, *, explore: float | None = None, popularity: float | None = None, n: int | None = None,
-             per_artist: int | None = None, stops: int = 5, rng_seed: int | None = None, dry: bool = False) -> dict:
+             per_artist: int | None = None, stops: int = 5, rng_seed: int | None = None, dry: bool = False,
+             keep: bool = False) -> dict:
         """A playlist from the user's own likes, no seed: a path of genre stops through the genre graph (explore =
         how far from their genres), filled with familiar and new artists. Needs likes (Yandex playlist,
         Navidrome stars, LB loves or imported loves). Without rng_seed a seed is picked and reported, so the
@@ -236,7 +252,7 @@ class Recommender:
         res["rng_seed"] = rng_seed
         pop = "auto" if p.popularity is None else f"{p.popularity:.2f}"
         name = f"{datetime.now(UTC):%Y-%m-%d}_flow_e{p.explore:.2f}_p{pop}"
-        return self._remember("flow", res, default_name=name)
+        return self._remember("flow", res, name, keep)
 
     def profile(self) -> dict:
         """The taste profile flow mode would use: the user's genres and their nearest neighbours."""
@@ -277,7 +293,7 @@ class Recommender:
         return f"{datetime.now(UTC):%Y-%m-%d}_{slug(seed)}_e{res['explore']:.2f}_p{pop}"
 
     # ------------------------------------------------------------------ LB created-for
-    def deep_cuts(self, user: str | None = None, kind: str = "exploration") -> dict:
+    def deep_cuts(self, user: str | None = None, kind: str = "exploration", keep: bool = False) -> dict:
         """LB's own Weekly Exploration ('deep cuts') or Weekly Jams; each week a separate entry."""
         user = user or self.lb_user
         if not user:
@@ -290,25 +306,25 @@ class Recommender:
              "url": f"https://listenbrainz.org/playlist/{w.mbid}", "tracks": [track_json(t) for t in w.tracks]}
             for w in weeks]}
         name = f"{datetime.now(UTC):%Y-%m-%d}_lb-{kind}_{slug(user)}"
-        return self._remember("lb-created-for", res, default_name=name)
+        return self._remember("lb-created-for", res, name, keep)
 
     # ------------------------------------------------------------------ feedback store
     def import_feedback(self, data: dict) -> dict:
         """Append a batch of loves/hates (see providers/feedback_store.py for the format); dated, newest wins."""
-        try:
-            return self.feedback_store.import_batch(data)
-        except ValueError as e:
-            raise InvalidInput(str(e)) from e  # the store's version() changes -> engine reloads taste
+        return self.feedback_store.import_batch(data)  # InvalidInput on a bad batch; taste reloads on change
 
     def feedback_batches(self) -> list[dict]:
         return self.feedback_store.batches()
 
     # ------------------------------------------------------------------ cache & storage
-    def _remember(self, kind: str, res: dict, default_name: str) -> dict:
-        rid = uuid.uuid4().hex[:12]
+    def _remember(self, kind: str, res: dict, default_name: str, keep: bool) -> dict:
+        """keep=True holds the result in memory under a result_id (for get() and save()); otherwise nothing
+        is stored and result_id is None."""
+        rid = uuid.uuid4().hex[:12] if keep else None
         out = {"result_id": rid, "type": kind, "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
                "default_name": default_name, **res}
-        self.cache.put(rid, out)
+        if keep:
+            self.cache.put(rid, out)
         return out
 
     def get(self, result_id: str) -> dict | None:
@@ -316,11 +332,12 @@ class Recommender:
 
     @property
     def save_dir(self) -> Path:
-        return self.cfg.path(self.cfg.storage.save_dir)
+        st = self.cfg.storage
+        return self.cfg.path(st.save_dir, self._base) if st.save_dir else self.dirs.state / "playlists"
 
     @property
     def data_dir(self) -> Path:
-        return self.cfg.path(self.cfg.storage.data_dir)
+        return self.dirs.data
 
     def genre_graph(self) -> GenreGraph:
         """The genre graph: packaged Wikidata structure plus the Yandex genre tree, ranked by learned weights
@@ -332,7 +349,7 @@ class Recommender:
     def save(self, result_id: str, name: str | None = None, overwrite: bool = False) -> Path:
         res = self.get(result_id)
         if res is None:
-            raise KeyError(f"result {result_id} expired or unknown (kept {self.cfg.storage.result_ttl_s}s)")
+            raise NotFound(f"result {result_id} expired or unknown (kept {self.cfg.storage.result_ttl_s}s)")
         path = self.save_dir / f"{slug(name) if name else res['default_name']}.json"
         if path.exists() and not overwrite:
             raise FileExistsError(path)
@@ -356,7 +373,7 @@ class Recommender:
     def load_saved(self, name: str) -> dict:
         p = self.save_dir / f"{slug(name)}.json"
         if not p.exists():
-            raise FileNotFoundError(p)
+            raise NotFound(f"no saved playlist '{name}'")
         return json.loads(p.read_text())
 
     # ------------------------------------------------------------------ optional data (storage.data_dir)
@@ -398,5 +415,7 @@ class Recommender:
     def with_config(self, **section_overrides) -> "Recommender":
         """Copy with e.g. defaults=replace(cfg.defaults, n=20) — handy for per-request tweaks. Close it when
         done (`with rec.with_config(...) as r:`), or its worker threads stay alive."""
-        return Recommender(replace(self.cfg, **section_overrides), token=self.token, lb_user=self.lb_user,
-                           history=self.history, feedback=self.feedback, offline=self.offline, log=self.log)
+        return Recommender(replace(self.cfg, **section_overrides), cache_dir=self.dirs.cache,
+                           data_dir=self.dirs.data, state_dir=self.dirs.state, token=self.token or "",
+                           lb_user=self.lb_user, history=self.history, feedback=self.feedback,
+                           offline=self.offline, env=self.env, log=self.log)

@@ -1,0 +1,117 @@
+"""Library use: folders, no implicit environment, typed errors, secrets never written down."""
+import os
+from pathlib import Path
+
+import pytest
+
+from postradio import config as config_mod
+from postradio import errors
+from postradio.api import Recommender
+from postradio.models import Artist
+from postradio.providers.listenbrainz import LBTopTracks
+
+
+@pytest.fixture
+def elsewhere(tmp_path, monkeypatch):
+    """Run from an unrelated working directory, with a polluted environment and $HOME, to prove neither is
+    used."""
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    monkeypatch.setenv("HOME", str(tmp_path / "userhome"))
+    monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    monkeypatch.setenv("LISTENBRAINZ_TOKEN", "env-token-must-not-be-read")
+    monkeypatch.setenv("LISTENBRAINZ_USERNAME", "env-user")
+    monkeypatch.setenv("POSTRADIO_HOME", str(tmp_path / "env-home"))
+    (cwd / "config.yaml").write_text("defaults: {n: 3}\n")  # a stray config the library must ignore
+    return tmp_path
+
+
+def files_under(p: Path) -> set[str]:
+    return {str(f.relative_to(p)) for f in p.rglob("*") if f.is_file()} if p.exists() else set()
+
+
+def test_home_holds_everything_and_nothing_is_read_implicitly(elsewhere):
+    home = elsewhere / "pv" / "postradio"
+    with Recommender(home=home) as rec:
+        assert rec.dirs == config_mod.Dirs(home / "cache", home / "data", home / "state")
+        assert rec.save_dir == home / "state" / "playlists" and rec.data_dir == home / "data"
+        assert rec.token is None and rec.lb_user is None  # the environment is not read by the library
+        assert rec.cfg.defaults.n == 50  # ./config.yaml in the working directory is not read either
+    assert files_under(elsewhere / "cwd") == {"config.yaml"}  # nothing written to the working directory
+    assert not (elsewhere / "env-home").exists()  # $POSTRADIO_HOME is a CLI convention only
+    assert files_under(home) == {"cache/http.sqlite"}
+
+
+def test_explicit_folders_and_env_are_opt_in(elsewhere):
+    store = elsewhere / "shared-store"
+    with Recommender(home=elsewhere / "h", data_dir=store, env=os.environ) as rec:
+        assert rec.data_dir == store and rec.dirs.cache == elsewhere / "h" / "cache"
+        assert rec.token == "env-token-must-not-be-read" and rec.lb_user == "env-user"  # because env= was passed
+    with Recommender(home=elsewhere / "h", env=os.environ, token="") as rec:
+        assert rec.token is None  # "" = explicitly tokenless, even with the env passed
+
+
+def test_without_home_the_users_own_folders_are_used(elsewhere):
+    with Recommender() as rec:
+        user = elsewhere / "userhome"
+        assert rec.dirs.cache == user / ".cache" / "postradio"
+        assert rec.data_dir == user / ".local" / "share" / "postradio" / "data"
+        assert rec.save_dir == user / ".local" / "share" / "postradio" / "playlists"  # same as before 4.5
+
+
+def test_config_paths_resolve_against_the_config_files_folder(elsewhere):
+    cfg_dir = elsewhere / "conf"
+    cfg_dir.mkdir()
+    (cfg_dir / "config.yaml").write_text("storage: {data_dir: store, http_cache: c/http.sqlite}\n")
+    cfg = config_mod.load(cfg_dir / "config.yaml")
+    with Recommender(cfg, home=elsewhere / "h") as rec:
+        assert rec.data_dir == cfg_dir / "store" and rec.http.db.execute("PRAGMA database_list").fetchone()[2] \
+            == str(cfg_dir / "c" / "http.sqlite")
+    with Recommender(cfg, home=elsewhere / "h", data_dir=elsewhere / "explicit") as rec:
+        assert rec.data_dir == elsewhere / "explicit"  # an explicit argument beats the config
+
+
+def test_find_config_precedence(elsewhere):
+    env = {"POSTRADIO_HOME": str(elsewhere / "envhome")}
+    assert config_mod.find_config({}, "x.yaml") == Path("x.yaml")
+    assert config_mod.find_config({"POSTRADIO_CONFIG": "/c.yaml"}) == Path("/c.yaml")
+    assert config_mod.find_config(env) == elsewhere / "cwd" / "config.yaml"  # home has no config.yaml yet
+    (elsewhere / "envhome").mkdir()
+    (elsewhere / "envhome" / "config.yaml").write_text("{}")
+    assert config_mod.find_config(env) == elsewhere / "envhome" / "config.yaml"
+    os.remove(elsewhere / "cwd" / "config.yaml")
+    assert config_mod.find_config({}) is None
+    with pytest.raises(errors.ConfigError):
+        config_mod.load(elsewhere / "missing.yaml")
+
+
+def test_every_error_is_a_postradio_error_and_old_catches_still_work():
+    for cls in (errors.InvalidInput, errors.NotFound, errors.ConfigError, errors.DataError,
+                errors.SourceUnavailable, errors.SourceAuthError):
+        assert issubclass(cls, errors.PostRadioError)
+    assert issubclass(errors.InvalidInput, ValueError) and issubclass(errors.SourceAuthError, errors.SourceError)
+
+
+def test_a_token_is_sent_but_never_written_to_the_cache_or_the_log(elsewhere, monkeypatch):
+    token, logs = "secret-token-1234", []
+    with Recommender(home=elsewhere / "h", token=token, log=logs.append) as rec:
+        sent = []
+
+        class Resp:
+            status_code, headers = 200, {}
+
+            def json(self):
+                return [{"recording_mbid": "r1", "recording_name": "Song", "total_user_count": 10}]
+
+        def request(method, url, headers=None, **_):
+            sent.append(headers or {})
+            return Resp()
+
+        monkeypatch.setattr(rec.http.session, "request", request)
+        tracks = LBTopTracks(rec.http, rec.token).top_tracks(Artist("A", mbid="a"), 10)
+        assert tracks and sent[0]["Authorization"] == f"Token {token}"
+        rec.http.db.commit()
+    cache = (elsewhere / "h" / "cache" / "http.sqlite").read_bytes()
+    assert token.encode() not in cache and not any(token in m for m in logs)

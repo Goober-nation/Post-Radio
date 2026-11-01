@@ -137,6 +137,19 @@ How Post-Vinyl (`rebuild/base`) handles ListenBrainz tokens, and what follows fo
      422 and 503.
   5. Results carry IDs `catalog.resolve()` can use (recording MBIDs where possible) and are easy to fake.
 
+### Step 1 done: folders, environment, errors, no storage by default
+
+- `Recommender(home=, cache_dir=, data_dir=, state_dir=, env=)`; `config.resolve_dirs`, `find_config`
+  (CLI only); `config.load(None)` = defaults, nothing implicit.
+- The library reads no environment, no `.env` and no `./config.yaml`. The CLI passes `os.environ`.
+- `errors.PostRadioError` hierarchy; one HTTP mapping in `server.http_error`.
+- `keep=False` by default: nothing is cached or saved unless asked.
+- Tests (`tests/test_library.py`): an unrelated working directory with a polluted env and a stray
+  config → nothing read, nothing written outside `home`; a token is sent but never in the cache file or
+  logs.
+- **User action:** the repo's `./config.yaml` is still found by the CLI when run from the repo root.
+  Relative paths in it now resolve against its own folder (the repo), as before.
+
 ## Dry runs and seeds (user request, 2026-11-01)
 
 - `radio --dry`: the seed and the artist graph by hop, no tracks. `flow --dry`: the profile and the genre

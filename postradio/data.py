@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .brand import DATA_RELEASE_REPO
+from .errors import DataError, InvalidInput, NotFound, SourceUnavailable
 from .genres import GRAPH_FILE, PACKAGED_GRAPH, WEIGHTS_FILE, cotag, coverage, popularity, similar
 from .http import Http
 from .providers.listenbrainz import LBData, LBSimilar
@@ -86,7 +87,7 @@ def sha256(p: Path) -> str:
 def build_graph(mb: MusicBrainz, wd: Wikidata, data_dir: Path, log: Callable[[str], None]) -> dict:
     g = wd.genre_graph(mb.genre_names())
     if not g["nodes"]:
-        raise RuntimeError("Wikidata returned an empty genre graph")
+        raise SourceUnavailable("Wikidata returned an empty genre graph")
     _write_json(data_dir / GRAPH_FILE, g, indent=1)
     log(f"graph: {len(g['nodes'])} genres, {len(g['edges'])} edges")
     return g
@@ -97,7 +98,7 @@ def build_store(http: Http, data_dir: Path, nodes: set[str], opts: BuildOptions,
     """Latest artist dump -> store -> index. Returns the dump's date (its folder name)."""
     latest = (http.text(f"{DUMPS}/LATEST") or "").strip()
     if not latest:
-        raise RuntimeError(f"couldn't read {DUMPS}/LATEST")
+        raise SourceUnavailable(f"couldn't read {DUMPS}/LATEST")
     archive = data_dir / DUMP_FILE
     stamp = data_dir / (DUMP_FILE + ".date")
     if stamp.is_file() and stamp.read_text().strip() != latest:
@@ -194,7 +195,7 @@ def build(http: Http, mb: MusicBrainz, data_dir: Path, out_root: Path, opts: Bui
     opts = opts or BuildOptions()
     unknown = set(opts.skip) - set(STEPS)
     if unknown:
-        raise ValueError(f"unknown build step(s) {sorted(unknown)} (steps: {', '.join(STEPS)})")
+        raise InvalidInput(f"unknown build step(s) {sorted(unknown)} (steps: {', '.join(STEPS)})")
     data_dir.mkdir(parents=True, exist_ok=True)
     info_path = data_dir / BUILD_INFO
     info = json.loads(info_path.read_text()) if info_path.is_file() else {}
@@ -218,13 +219,13 @@ def release(http: Http, tag: str | None, repo: str = DATA_RELEASE_REPO) -> dict:
     if tag:
         rel = http.get(f"{api}/tags/{tag}", max_age=600)
         if not isinstance(rel, dict) or not rel.get("tag_name"):
-            raise FileNotFoundError(f"no release {tag} in {repo}")
+            raise NotFound(f"no release {tag} in {repo}")
         return rel
     rels = http.get(api, params={"per_page": 50}, max_age=600)
     data = [r for r in rels if isinstance(r, dict) and str(r.get("tag_name", "")).startswith("data-")] \
         if isinstance(rels, list) else []
     if not data:
-        raise FileNotFoundError(f"no data-* release in {repo}")
+        raise DataError(f"no data-* release in {repo}")
     return max(data, key=lambda r: r["tag_name"])
 
 
@@ -236,7 +237,7 @@ def fetch(http: Http, data_dir: Path, tag: str | None = None, store: bool = True
     assets = {a["name"]: a["browser_download_url"] for a in rel.get("assets") or []
               if isinstance(a, dict) and a.get("name") and a.get("browser_download_url")}
     if "manifest.json" not in assets:
-        raise FileNotFoundError(f"{rel['tag_name']}: no manifest.json")
+        raise DataError(f"{rel['tag_name']}: no manifest.json")
     log(f"release {rel['tag_name']}: {', '.join(sorted(assets))}")
     data_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=data_dir) as tmp:
@@ -247,10 +248,10 @@ def fetch(http: Http, data_dir: Path, tag: str | None = None, store: bool = True
         wanted = [n for n in files if n.endswith(".json") or (store and n == STORE_FILE + ".xz")]
         for name in wanted:
             if name not in assets:
-                raise FileNotFoundError(f"{rel['tag_name']}: manifest lists {name} but the release lacks it")
+                raise DataError(f"{rel['tag_name']}: manifest lists {name} but the release lacks it")
             http.download(assets[name], tmp / name, resume=False, log=log)
             if sha256(tmp / name) != files[name]["sha256"]:
-                raise ValueError(f"{name}: checksum mismatch, nothing installed")
+                raise DataError(f"{name}: checksum mismatch, nothing installed")
             log(f"  {name} ok")
         for name in wanted:
             if name == STORE_FILE + ".xz":
@@ -275,7 +276,7 @@ def check(http: Http, data_dir: Path, tag: str | None = None, repo: str = DATA_R
     rel = release(http, tag, repo)
     assets = {a["name"]: a for a in rel.get("assets") or [] if isinstance(a, dict) and a.get("name")}
     if "manifest.json" not in assets:
-        raise FileNotFoundError(f"{rel['tag_name']}: no manifest.json")
+        raise DataError(f"{rel['tag_name']}: no manifest.json")
     installed = json.loads((data_dir / INSTALLED).read_text()) if (data_dir / INSTALLED).is_file() else {}
     with tempfile.TemporaryDirectory() as tmp:
         m = Path(tmp) / "manifest.json"

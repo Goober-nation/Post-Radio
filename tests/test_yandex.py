@@ -8,11 +8,11 @@ from fakes import Resolver, Similar, Tracks
 from postradio import config as config_mod
 from postradio.api import Recommender
 from postradio.engine import Params, Providers, Radio
+from postradio.errors import InvalidInput, SourceUnavailable
 from postradio.genres import GenreGraph
 from postradio.models import Artist, Track
 from postradio.providers.yandex import (
     YandexClient,
-    YandexError,
     YandexLikes,
     YandexSimilar,
     genre_table,
@@ -65,7 +65,7 @@ def test_playlist_links():
     assert playlist_path("https://music.yandex.ru/playlists/lk.abc-123?utm=x") == "/playlist/lk.abc-123"
     assert playlist_path(URL) == "/users/me/playlists/3"
     assert playlist_path("<iframe src='https://music.yandex.ru/iframe/#/playlist/me/3/'>") == "/users/me/playlists/3"
-    with pytest.raises(YandexError):
+    with pytest.raises(InvalidInput):
         playlist_path("https://example.com/playlists/1")
 
 
@@ -88,7 +88,7 @@ def test_paging_that_stops_early_keeps_what_arrived_and_says_so():
 
 
 def test_playlist_that_never_loads_is_a_clear_error():
-    with pytest.raises(YandexError):
+    with pytest.raises(SourceUnavailable):
         YandexClient(Http({})).playlist(URL)
 
 

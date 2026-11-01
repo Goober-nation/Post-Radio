@@ -7,7 +7,8 @@ from pathlib import Path
 
 from . import config as config_mod
 from .api import Recommender
-from .brand import CONFIG_ENV, NAME
+from .brand import CONFIG_ENV, HOME_ENV, NAME
+from .errors import PostRadioError
 from .providers import NoHistory
 from .providers.history import FileHistory
 
@@ -57,7 +58,8 @@ def parser() -> argparse.ArgumentParser:
     # global flags work before or after the subcommand: `--json radio ...` == `radio ... --json`
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--config", default=argparse.SUPPRESS,
-                        help=f"YAML config (default: ${CONFIG_ENV} or ./config.yaml)")
+                        help=f"YAML config (default: ${CONFIG_ENV}, ${HOME_ENV}/config.yaml, ./config.yaml, "
+                             f"~/.config/{NAME}/config.yaml)")
     common.add_argument("--no-token", action="store_true", default=argparse.SUPPRESS,
                         help="ignore $LISTENBRAINZ_TOKEN (fully tokenless)")
     common.add_argument("--offline", action="store_true", default=argparse.SUPPRESS, help="HTTP cache only")
@@ -156,8 +158,8 @@ def main(argv=None):
     for flag, default in (("config", None), ("no_token", False), ("offline", False), ("json", False)):
         if not hasattr(a, flag):
             setattr(a, flag, default)
-    load_env(config_mod.ROOT / ".env")
-    cfg = config_mod.load(a.config)
+    load_env(Path.cwd() / ".env")  # the CLI's own convenience; the library never reads .env or os.environ
+    cfg = config_mod.load(config_mod.find_config(os.environ, a.config))
     log = (lambda *_: None) if a.json else (lambda m: print(f"# {m}", file=sys.stderr))
     token = "" if a.no_token else None  # "" disables, None = env
 
@@ -179,7 +181,8 @@ def main(argv=None):
             cfg = replace(cfg, feedback=replace(cfg.feedback, enabled=False))
         if a.navidrome_url:
             cfg = replace(cfg, feedback=replace(cfg.feedback, navidrome_url=a.navidrome_url))
-    rec = Recommender(cfg, token=token, history=history, offline=a.offline, log=log)
+    rec = Recommender(cfg, home=os.environ.get(HOME_ENV) or None, token=token, history=history,
+                      offline=a.offline, env=os.environ, log=log)
 
     if a.cmd == "serve":
         import uvicorn
@@ -223,7 +226,7 @@ def main(argv=None):
         return
     if a.cmd == "flow":
         res = rec.flow(explore=a.explore, popularity=a.popularity, n=a.n, per_artist=a.per_artist,
-                       stops=a.stops, rng_seed=a.rng_seed, dry=a.dry)
+                       stops=a.stops, rng_seed=a.rng_seed, dry=a.dry, keep=a.save is not None)
         if a.dry and not a.json:
             log(f"rng seed: {res['rng_seed']} (repeat with --rng-seed {res['rng_seed']})")
             print(f"path: {' -> '.join(res['path'])}")
@@ -252,7 +255,8 @@ def main(argv=None):
         res = rec.generate(artist=a.artist, track=a.track, artist_mbid=a.artist_mbid, recording_mbid=a.recording_mbid,
                            genres=genres, genre_op=a.genre_op, unheard=a.unheard, explore=a.explore,
                            popularity=a.popularity, n=a.n, per_artist=a.per_artist, rng_seed=a.rng_seed,
-                           auto_popularity=a.auto_popularity, mix=_parse_mix(a.mix), dry=a.dry)
+                           auto_popularity=a.auto_popularity, mix=_parse_mix(a.mix), dry=a.dry,
+                           keep=a.save is not None)
         if a.dry:
             if a.json:
                 print(json.dumps(res, indent=2, ensure_ascii=False))
@@ -266,7 +270,7 @@ def main(argv=None):
                     f"{x['artist']} [{'/'.join(x['via'])}]" for x in info["top"]))
             return
     else:
-        res = rec.deep_cuts(a.user, a.kind)
+        res = rec.deep_cuts(a.user, a.kind, keep=a.save is not None)
 
     if a.json:
         print(json.dumps(res, indent=2, ensure_ascii=False))
@@ -291,7 +295,7 @@ def run(argv=None):
     """Entry point: user errors (bad seed, unknown stream, out-of-range value) print one line, no traceback."""
     try:
         main(argv)
-    except (ValueError, FileNotFoundError, FileExistsError, KeyError) as e:
+    except (PostRadioError, ValueError, FileExistsError) as e:
         raise SystemExit(f"{NAME}: error: {e}") from None
 
 

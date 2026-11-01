@@ -16,6 +16,7 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
+from ..errors import InvalidInput
 from ..models import Feedback, norm
 from . import FeedbackProvider
 
@@ -34,7 +35,7 @@ class JsonFeedbackStore(FeedbackProvider):
     def import_batch(self, data: dict, now: datetime | None = None) -> dict:
         rows = list(self._rows(data))
         if not rows:
-            raise ValueError("no opinions found: expected {'loves'|'hates': {'artists'|'albums'|'tracks': [...]}}")
+            raise InvalidInput("no opinions found: expected {'loves'|'hates': {'artists'|'albums'|'tracks': [...]}}")
         stamp = (now or datetime.now(UTC)).isoformat(timespec="seconds")
         batch = {"batch": uuid.uuid4().hex[:10], "imported_at": stamp}
         lines = "".join(json.dumps({**batch, **r}, ensure_ascii=False) + "\n" for r in rows)
@@ -51,21 +52,21 @@ class JsonFeedbackStore(FeedbackProvider):
     @staticmethod
     def _rows(data: dict):
         if not isinstance(data, dict) or not set(data) <= {"loves", "hates"}:
-            raise ValueError("top level must be an object with 'loves' and/or 'hates'")
+            raise InvalidInput("top level must be an object with 'loves' and/or 'hates'")
         for side, score in (("loves", 1), ("hates", -1)):
             section = data.get(side) or {}
             if not isinstance(section, dict) or not set(section) <= set(KINDS):
-                raise ValueError(f"'{side}' must be an object with keys {KINDS}")
+                raise InvalidInput(f"'{side}' must be an object with keys {KINDS}")
             for kind in KINDS:
                 for item in section.get(kind) or []:
                     if isinstance(item, str):
                         item = {"name": item} if kind == "artists" else None
                     if not isinstance(item, dict):
-                        raise ValueError(f"{side}.{kind}: items must be objects (artists may be plain names)")
+                        raise InvalidInput(f"{side}.{kind}: items must be objects (artists may be plain names)")
                     artist = item.get("artist") or item.get("name")
                     title = item.get("title")
                     if not artist or (kind != "artists" and not title):
-                        raise ValueError(f"{side}.{kind}: each item needs 'artist'/'name'" +
+                        raise InvalidInput(f"{side}.{kind}: each item needs 'artist'/'name'" +
                                          ("" if kind == "artists" else " and 'title'"))
                     yield {"kind": kind[:-1], "artist": artist, "title": title if kind != "artists" else None,
                            "score": score, "artist_mbid": item.get("artist_mbid") or item.get("mbid"),

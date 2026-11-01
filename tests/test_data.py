@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from postradio import data
+from postradio.errors import DataError
 from postradio.genres import GenreGraph
 from postradio.models import Artist, Edge
 from postradio.providers.listenbrainz import LBData
@@ -201,7 +202,7 @@ def test_fetch_installs_nothing_on_checksum_mismatch(tmp_path):
 
 
 def test_fetch_without_a_data_release(tmp_path):
-    with pytest.raises(FileNotFoundError):
+    with pytest.raises(DataError):
         data.fetch(FakeHttp({"/releases": [{"tag_name": "v1.0.0"}]}), tmp_path, log=lambda _m: None)
 
 
