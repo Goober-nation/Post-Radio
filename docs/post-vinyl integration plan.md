@@ -129,7 +129,7 @@ user (radio / flow form) ─→ routes/recs ─→ services/recs ─→ clients/
 
 ## Order
 
-1. Post-Radio: `py.typed`; pin a commit after this branch merges.
+1. Post-Radio: `py.typed` (done); pin a commit after this branch merges.
 2. Post-Vinyl client + fake + fakes-match test (pieces 1, 2).
 3. Navidrome stars (3), token (4).
 4. Proposals store/service (§7 inbox) if not built yet: recs depends on it.
