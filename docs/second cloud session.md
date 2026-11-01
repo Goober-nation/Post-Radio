@@ -36,12 +36,84 @@ Checked on real services:
 - Release `data-2026-11` was created by the user. Fetch was verified against it.
 - The first upload had no store: `data_dir` pointed at a folder without one, and nothing warned.
 
-## Phase 3: Yandex adapter (unverified on real Yandex)
+## Phase 3: Yandex adapter
 
+- Real playlist (952 tracks) loads on the user's machine: all pages arrive, history works (`*` on known
+  artists, liked songs dropped). Taste was off with an older config's source list. Fixed: `--yandex` now
+  adds the `yandex` source itself.
 - `providers/yandex.py`: `YandexLikes` (taste, `as_history()`, tags), `YandexSimilar` (soundtrack
   catalogues dropped). Config `sources.yandex_playlist` / `yandex_tracks` / `history: yandex`;
   CLI `radio --yandex URL`.
 - The cloud session gets 451 on playlist endpoints (`/genres` answers 200), so it is tested with fakes only.
+
+## Development notes
+
+- Setup, always in a venv:
+  `python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'`
+- Checks: `.venv/bin/pytest -q` and `.venv/bin/ruff check postradio tests scripts`. The repo doesn't use
+  `ruff format`.
+- After changing `postradio/config.py`, run `.venv/bin/python scripts/gen_config_example.py` (a test
+  compares the two).
+- Commits use the user's own git identity, with no AI attribution (AGENTS.md). The first four commits were
+  rewritten on 2026-11-01 to fix that, so clones from before then need
+  `git fetch origin && git reset --hard origin/flow-integration`.
+- `.gitignore` anchors `/data/` and `/dist/` to the repo root. An unanchored `data/` also matched
+  `postradio/data/` and hid `yandex_genres.json`. Tests passed anyway, because the file existed locally.
+  After adding a packaged file, check `git ls-files postradio/data`.
+- Cloud sessions: Yandex answers 451 on playlist endpoints (`/genres` works), so Yandex is tested with
+  fakes there. MusicBrainz, ListenBrainz, Wikidata and the MusicBrainz dump download all work.
+- Wikidata SPARQL must stay under its 60 s limit, or the answer comes back cut off mid-JSON with HTTP 200.
+
+## User configuration (as used in testing)
+
+`config.yaml` in the repo root (or `--config` / `$POSTRADIO_CONFIG`). Only changed keys are needed;
+unknown keys are an error. A `config.yaml` generated before a release lacks the new keys, which then take
+their defaults. The exception is an explicit list such as `feedback.sources`: it doesn't gain new sources
+by itself.
+
+```yaml
+storage:
+  data_dir: /path/to/Post-Radio/data   # the repo's data/ (ignored by git), holds the store and genre files
+sources:
+  history: yandex                      # lb | file | yandex | none
+  yandex_playlist: https://music.yandex.ru/playlists/<your likes playlist id>
+  yandex_tracks: null                  # newest N only; null = all
+feedback:
+  sources: [json, yandex, navidrome, lb]   # priority order, first opinion wins
+advanced:
+  mix: {deezer-top: 0.04}              # caps the pool, not the playlist share (see Ideas)
+```
+
+`storage.data_dir` contains:
+- `mb_artists.sqlite` (584 MB), `genre_artists.json`, `genre_graph.json` and `genre_weights.json`, from
+  release `data-2026-11`;
+- leftovers from the webpage (`deezer_cache.json`, an old `manifest.json`), which Post-Radio ignores.
+
+## How to use
+
+```bash
+# radio from an artist, with the Yandex likes playlist as history + taste
+.venv/bin/postradio radio --artist "Kanye West" -n 20 --yandex "<playlist link>"
+.venv/bin/postradio radio --genre shoegaze -n 20          # genre seed (store adds MusicBrainz artists)
+.venv/bin/postradio radio --artist X --mix "deezer-top=0"  # switch a stream off for one run
+
+# optional data (storage.data_dir)
+.venv/bin/postradio data status                 # what is installed
+.venv/bin/postradio data fetch [--no-store]     # newest data-YYYY-MM release, verified by checksum
+.venv/bin/postradio data build --out dist       # full rebuild, ~30 min, ~3 GB; --skip graph,dump,weights
+gh release upload data-YYYY-MM --repo Goober-nation/Post-Radio --clobber dist/data-YYYY-MM/*
+```
+
+What to look for in a radio run's log:
+- `# yandex: N of M tracks` — the playlist loaded.
+- `# history: …` — liked artists count as known (marked `*`), and liked songs are dropped.
+- `# feedback: N opinions from json, yandex` — your likes act as taste.
+
+Release checklist:
+1. `data status` should show the store and index. Otherwise the build packages without them.
+2. Run `data build`.
+3. Upload the whole `dist/data-YYYY-MM/` folder.
+4. `data fetch` should then list `mb_artists.sqlite.xz` and `genre_artists.json`.
 
 ## Ideas, not scheduled
 
