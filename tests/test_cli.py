@@ -16,3 +16,28 @@ def test_global_flags_work_before_or_after_the_subcommand():
 def test_unset_global_flags_are_absent_not_false_overrides():
     a = parser().parse_args(["--json", "radio", "--artist", "X"])
     assert a.json is True  # a subparser default must not clobber the value given before the subcommand
+
+
+def test_yandex_flag_turns_on_history_and_taste_even_with_an_old_source_list(tmp_path, monkeypatch):
+    import pytest
+
+    from postradio import cli
+
+    cfg = tmp_path / "c.yaml"
+    cfg.write_text("feedback: {sources: [json, navidrome, lb]}\n")  # written before yandex existed
+    seen = {}
+
+    class Stop(Exception):
+        pass
+
+    def fake_recommender(c, **_):
+        seen["cfg"] = c
+        raise Stop
+
+    monkeypatch.setattr(cli, "Recommender", fake_recommender)
+    with pytest.raises(Stop):
+        cli.main(["--config", str(cfg), "radio", "--artist", "X", "--yandex",
+                  "https://music.yandex.ru/playlists/lk.abc"])
+    c = seen["cfg"]
+    assert c.feedback.sources == ["json", "yandex", "navidrome", "lb"] and c.sources.history == "yandex"
+    assert c.sources.yandex_playlist == "https://music.yandex.ru/playlists/lk.abc"

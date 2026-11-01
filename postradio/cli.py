@@ -150,6 +150,10 @@ def main(argv=None):
             hist = "yandex" if not (a.no_history or a.history_file or a.lb_user) else cfg.sources.history
             cfg = replace(cfg, sources=replace(cfg.sources, yandex_playlist=a.yandex, history=hist,
                                                yandex_tracks=a.yandex_tracks or cfg.sources.yandex_tracks))
+            fb = list(cfg.feedback.sources)
+            if "yandex" not in fb:  # the flag means "use my playlist", even with an older config's source list
+                fb.insert(1 if fb[:1] == ["json"] else 0, "yandex")
+                cfg = replace(cfg, feedback=replace(cfg.feedback, sources=fb))
         if a.no_feedback:
             cfg = replace(cfg, feedback=replace(cfg.feedback, enabled=False))
         if a.navidrome_url:
