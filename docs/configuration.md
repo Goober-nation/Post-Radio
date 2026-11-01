@@ -74,6 +74,8 @@ that name the key.
 
 ## config.yaml: `advanced` (algorithm constants)
 
+Each key is described in [advanced.md](advanced.md).
+
 | Group | Keys (default) |
 |---|---|
 | Explore → graph shape | `hop_span` 3.0 · `max_extra_hops` 2 · `radio_mode_thresholds` [0.34, 0.67] |

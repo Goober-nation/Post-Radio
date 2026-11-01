@@ -90,3 +90,11 @@ def test_http_server_flow(rec):
     assert client.get("/saved").json()[0]["name"] == "mine"
     assert client.get("/saved/mine").json()["result_id"] == rid
     assert client.post("/radio", json={"artist": "Nobody"}).status_code == 404
+
+
+def test_every_advanced_key_is_documented():
+    from pathlib import Path
+
+    doc = (Path(config_mod.ROOT) / "docs" / "advanced.md").read_text()
+    missing = [f.name for f in dataclasses.fields(config_mod.Advanced) if f"`{f.name}`" not in doc]
+    assert not missing, f"add these to docs/advanced.md: {missing}"

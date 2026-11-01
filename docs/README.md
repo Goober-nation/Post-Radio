@@ -10,6 +10,7 @@ through ListenBrainz's own Weekly Exploration and Jams playlists. The default se
 | [architecture.md](architecture.md) | The pipeline in execution order (numbered diagram), how scoring works, concurrency |
 | [classes.md](classes.md) | Class diagram: models, provider interfaces, adapters, engine, API, config |
 | [configuration.md](configuration.md) | Every CLI command and flag, HTTP endpoint, Python API call, and config key with defaults |
+| [advanced.md](advanced.md) | Every `advanced` config key (algorithm constants): default and what it does |
 | [dependencies.md](dependencies.md) | Module imports, external services (auth, rate limits), measured cost, Deezer genre list |
 
 The quick start is in the [project README](../README.md). `config.example.yaml` is generated from
