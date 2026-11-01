@@ -110,6 +110,17 @@ class History:
                 a[k] = max(a.get(k, 0), n)
         return cls(a, {track_key(ar, t) for ar, t in tracks})
 
+    @classmethod
+    def merged(cls, histories: Iterable["History"]) -> "History":
+        """Several sources' histories as one: play counts add up, heard tracks are the union."""
+        artists: dict[str, int] = {}
+        heard: set[str] = set()
+        for h in histories:
+            for k, n in h._artists.items():
+                artists[k] = artists.get(k, 0) + n
+            heard |= h._heard
+        return cls(artists, heard)
+
     def plays(self, artist: Artist) -> int:
         return self._artists.get(artist.mbid or "", 0) or self._artists.get("n:" + artist.key, 0)
 
@@ -131,6 +142,19 @@ class Feedback:
     title: str | None
     score: float
     source: str
+    artist_mbid: str | None = None
+    recording_mbid: str | None = None
+
+
+@dataclass(frozen=True)
+class Like:
+    """One opinion supplied as data by a host app (e.g. Post-Vinyl's Navidrome stars). title=None = the artist
+    as a whole. score in [-1, 1]: 1 = love/star (the default), -1 = hate. `at` = unix seconds when it was
+    given (newer likes weigh more in flow's profile); None if unknown."""
+    artist: str
+    title: str | None = None
+    at: int | None = None
+    score: float = 1.0
     artist_mbid: str | None = None
     recording_mbid: str | None = None
 

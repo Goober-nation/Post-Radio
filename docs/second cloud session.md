@@ -163,6 +163,21 @@ How Post-Vinyl (`rebuild/base`) handles ListenBrainz tokens, and what follows fo
 - Not done yet: recording MBIDs for Deezer tracks. That needs a per-track lookup (LB name lookup with a token,
   or MusicBrainz at 1/s), to decide with step 3.
 
+### Step 3 done: per-call listeners
+
+- `api.Listener(likes, plays, yandex_playlist, yandex_tracks, lb_user, lb_token, feedback, history)` on
+  `generate` / `flow` / `profile`. It replaces the configured taste and history for that call only.
+- Taste as data: `models.Like` (artist, title, at, score, MBIDs); history as data: `models.Play`.
+  `providers/listener.py` turns them into providers and merges several history sources.
+- `Radio.view(providers)`: a per-call engine with its own taste and history snapshot, sharing the thread
+  pool.
+- HTTP: `listener` on `POST /radio` and `POST /flow`, and a new `POST /profile`.
+- Tests:
+  - two listeners × 4 calls on one `Recommender` in parallel each got their own profile;
+  - the configured taste stays untouched;
+  - each call's token reached its sources and is never echoed;
+  - liked and played tracks are dropped, and played artists count as known.
+
 ## Dry runs and seeds (user request, 2026-11-01)
 
 - `radio --dry`: the seed and the artist graph by hop, no tracks. `flow --dry`: the profile and the genre

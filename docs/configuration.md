@@ -83,7 +83,8 @@ Every error raised on purpose is a `postradio.errors.PostRadioError`:
 |---|---|
 | `POST /radio` | Body: exactly one of `artist`, `track`, `artist_mbid`, `recording_mbid`, `genres`. Optional: `genre_op`, `unheard`, `explore`, `popularity`, `n` (1–500), `per_artist`, `rng_seed`, `auto_popularity`, `mix` (`{stream: 0..1}`), `dry` (artist graph preview, nothing stored). Returns **422** for invalid input (seed count, malformed MBID or track string, out-of-range values, unknown mix stream) and **404** when the seed doesn't exist. |
 | `POST /flow` | Body: `explore`, `popularity`, `n` (1–500), `per_artist`, `stops` (1–20), `rng_seed`, `dry` (profile and path only). Uses the configured likes. **422** without likes. |
-| `GET /profile` | The genre profile flow starts from, plus nearby genres |
+| `GET /profile` | The genre profile flow starts from (configured taste), plus nearby genres |
+| `POST /profile` | The same for the listener in the body: `likes`, `plays`, `yandex_playlist`, `yandex_tracks`, `lb_user`, `lb_token` |
 | `GET /deep-cuts?user=&kind=exploration\|jams` | LB Weekly Exploration or Jams, one entry per week |
 | `GET /results/{id}` | An unsaved result from memory; 404 once expired |
 | `POST /results/{id}/save` | `{name, overwrite}`; 409 if the file exists |
@@ -107,6 +108,25 @@ with Recommender(config.load("config.yaml"), home="/data/postradio") as rec:   #
     rec.deep_cuts(user="someone")               # DeepCuts: weeks -> tracks
     rec.import_feedback({"loves": {"artists": ["Slowdive"]}})
 ```
+
+**Many listeners on one `Recommender`.** Keep one long-lived `Recommender` per deployment, which shares the
+store, cache and threads, and pass each user's taste per call:
+
+```python
+from postradio.api import Listener
+from postradio.models import Like, Play
+
+me = Listener(likes=[Like("Slowdive", "Alison", at=1730000000)],   # loves/stars as data (dislike: score=-1)
+              plays=[Play("Ride", "Vapour Trail")],                # history as data
+              yandex_playlist=None, lb_user=None,                  # or sources Post-Radio fetches itself
+              lb_token=user_token)                                 # this user's LB token, for this call only
+pl = rec.flow(explore=0.5, n=30, listener=me)                      # also generate(..., listener=), profile()
+```
+
+A `Listener` replaces the configured taste and history for that call only; concurrent calls never see each
+other's. Its token is used for that call's ListenBrainz requests and is never stored, cached or logged.
+Over HTTP, `POST /radio` and `POST /flow` take the same fields under `"listener"`, and `POST /profile`
+takes a listener as its body.
 
 **Result types** (`postradio/results.py`); each has `to_dict()`, which is also what the HTTP API returns:
 - **`Playlist`**, from `generate` and `flow`:

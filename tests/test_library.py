@@ -1,17 +1,19 @@
 """Library use: folders, no implicit environment, typed errors, secrets never written down, typed results."""
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 from fakes import Resolver, Similar, Tracks
-from test_flow import graph, radio
+from test_flow import GenreArtists, MBTags, graph, radio
 
 from postradio import config as config_mod
 from postradio import errors
-from postradio.api import Recommender
+from postradio.api import Listener, Recommender
 from postradio.engine import Providers, Radio
-from postradio.models import Artist, Feedback
+from postradio.models import Artist, Feedback, Like, Play
+from postradio.providers import NoHistory
 from postradio.providers.listenbrainz import LBTopTracks
 from postradio.results import FlowPreview, GraphPreview, Playlist, PlaylistTrack, Profile
 
@@ -171,3 +173,48 @@ def test_http_sends_the_same_shape_as_to_dict(lib):
         assert set(body) == set(Playlist.__dataclass_fields__) and body["result_id"]
         assert Playlist.from_dict(body).tracks == lib.generate(artist="Seed", n=5, rng_seed=1).tracks
         assert client.post("/radio", json={"artist": "Seed", "dry": True}).json()["dry"] is True
+
+
+# ---------------------------------------------------------------- per-call listeners
+
+
+@pytest.fixture
+def shared(tmp_path):
+    """One long-lived Recommender whose sources are fakes; per-call ones get the listener's taste."""
+    rec = Recommender(home=tmp_path / "home")
+    tokens = []
+
+    def providers(token=None, history=None, feedback=None, yandex=None):
+        tokens.append(token)
+        return Providers(resolver=Resolver(), similar=[Similar()], tracks=[Tracks()],
+                         feedback=feedback or [], history=history or NoHistory(),
+                         profile_taggers={"mb": MBTags()}, genres=[GenreArtists()])
+
+    rec._providers = providers
+    rec.radio = Radio(providers(), rec.cfg.advanced, log=lambda *_: None)
+    rec.genre_graph = graph
+    rec.tokens = tokens
+    yield rec
+    rec.close()
+
+
+def test_listeners_on_one_recommender_get_their_own_taste_concurrently(shared):
+    hip = Listener(likes=[Like("Seed", "Seed song 0", at=100)], lb_token="tok-a")
+    jazz = Listener(likes=[Like("Gamma", "Gamma song 0", at=100)], lb_token="tok-b")
+    with ThreadPoolExecutor(4) as ex:
+        runs = list(ex.map(lambda li: shared.profile(li).profile[0]["genre"], [hip, jazz] * 4))
+    assert runs == ["hip hop", "jazz rap"] * 4
+    assert {"tok-a", "tok-b"} <= set(shared.tokens)  # each call's own token reached its sources
+    with pytest.raises(errors.InvalidInput, match="needs likes"):
+        shared.flow(n=4)  # the shared, configured taste is untouched (and empty here)
+
+
+def test_listener_likes_and_plays_as_data(shared):
+    li = Listener(likes=[Like("Seed", "Seed song 0", at=100), Like("Seed", "Seed song 1", at=90)],
+                  plays=[Play("Alpha", "Alpha song 0")])
+    f = shared.flow(explore=0, n=6, stops=2, rng_seed=1, listener=li)
+    titles = {(t.artist, t.title) for t in f.tracks}
+    assert ("Seed", "Seed song 0") not in titles and ("Alpha", "Alpha song 0") not in titles  # liked / played
+    r = shared.generate(artist="Seed", n=20, per_artist=20, explore=0.5, listener=li)
+    assert ("Alpha", "Alpha song 0") not in {(t.artist, t.title) for t in r.tracks}
+    assert any(t.familiar for t in r.tracks if t.artist == "Alpha")  # played artist counts as known

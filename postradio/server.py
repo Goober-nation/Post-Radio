@@ -5,7 +5,7 @@ from typing import Literal
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from .api import Recommender
+from .api import Listener, Recommender
 from .brand import DISPLAY_NAME
 from .errors import (
     ConfigError,
@@ -16,6 +16,7 @@ from .errors import (
     SourceAuthError,
     SourceUnavailable,
 )
+from .models import Like, Play
 
 STATUS = [(NotFound, 404), (InvalidInput, 422), (SourceAuthError, 422), (SourceUnavailable, 503),
           (ConfigError, 500), (DataError, 500)]
@@ -25,6 +26,40 @@ def http_error(e: Exception) -> HTTPException:
     """One mapping from Post-Radio errors to HTTP codes, for every endpoint."""
     code = next((c for cls, c in STATUS if isinstance(e, cls)), 500)
     return HTTPException(code, str(e))
+
+
+class LikeIn(BaseModel):
+    artist: str = Field(min_length=1)
+    title: str | None = None
+    at: int | None = None  # unix seconds
+    score: float = Field(1.0, ge=-1, le=1)
+    artist_mbid: str | None = None
+    recording_mbid: str | None = None
+
+
+class PlayIn(BaseModel):
+    artist: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    timestamp: int | None = None
+    artist_mbid: str | None = None
+    recording_mbid: str | None = None
+
+
+class ListenerIn(BaseModel):
+    """This request's listener: replaces the server's configured taste and history for this call only. The
+    token is used for the call and never stored or logged."""
+    model_config = {"extra": "forbid"}
+    likes: list[LikeIn] = []
+    plays: list[PlayIn] = []
+    yandex_playlist: str | None = None
+    yandex_tracks: int | None = Field(None, ge=1)
+    lb_user: str | None = None
+    lb_token: str | None = None
+
+    def build(self) -> Listener:
+        return Listener(likes=[Like(**x.model_dump()) for x in self.likes],
+                        plays=[Play(**x.model_dump()) for x in self.plays], yandex_playlist=self.yandex_playlist,
+                        yandex_tracks=self.yandex_tracks, lb_user=self.lb_user, lb_token=self.lb_token)
 
 
 class RadioRequest(BaseModel):
@@ -43,6 +78,7 @@ class RadioRequest(BaseModel):
     auto_popularity: bool = False  # ignore configured default popularity; follow explore
     mix: dict[str, float] | None = None  # per-run stream multipliers 0..1, e.g. {"deezer-top": 0.2}
     dry: bool = False  # preview the artist graph only; nothing is stored
+    listener: ListenerIn | None = None  # per-request taste; None = the server's configured taste
 
 
 class FlowRequest(BaseModel):
@@ -54,6 +90,7 @@ class FlowRequest(BaseModel):
     stops: int = Field(5, ge=1, le=20)
     rng_seed: int | None = None
     dry: bool = False  # preview the profile and genre path only; nothing is stored
+    listener: ListenerIn | None = None  # per-request taste; None = the server's configured taste
 
 
 class ArtistRef(BaseModel):
@@ -111,14 +148,18 @@ def create_app(rec: Recommender | None = None) -> FastAPI:
         if sum(x is not None for x in seeds) != 1:
             raise HTTPException(422, "give exactly one of artist, track, artist_mbid, recording_mbid, genres")
         try:
-            return rec.generate(**req.model_dump(), keep=not req.dry).to_dict()
+            args = req.model_dump(exclude={"listener"})
+            return rec.generate(**args, keep=not req.dry,
+                                listener=req.listener.build() if req.listener else None).to_dict()
         except PostRadioError as e:
             raise http_error(e) from e
 
     @app.post("/flow")
     def flow(req: FlowRequest):
         try:
-            return rec.flow(**req.model_dump(), keep=not req.dry).to_dict()
+            args = req.model_dump(exclude={"listener"})
+            return rec.flow(**args, keep=not req.dry,
+                            listener=req.listener.build() if req.listener else None).to_dict()
         except PostRadioError as e:
             raise http_error(e) from e
 
@@ -126,6 +167,13 @@ def create_app(rec: Recommender | None = None) -> FastAPI:
     def profile():
         try:
             return rec.profile().to_dict()
+        except PostRadioError as e:
+            raise http_error(e) from e
+
+    @app.post("/profile")
+    def profile_for(listener: ListenerIn):
+        try:
+            return rec.profile(listener.build()).to_dict()
         except PostRadioError as e:
             raise http_error(e) from e
 

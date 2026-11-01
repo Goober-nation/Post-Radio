@@ -42,6 +42,26 @@ def _mark_pool_thread() -> None:
     _worker.in_pool = True
 
 
+class _Pool:
+    """A lazily started thread pool that several Radio views share."""
+
+    def __init__(self):
+        self.lock, self.executor = threading.Lock(), None
+
+    def get(self, workers: int) -> ThreadPoolExecutor:
+        with self.lock:
+            if self.executor is None:
+                self.executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix=POOL_PREFIX,
+                                                   initializer=_mark_pool_thread)
+            return self.executor
+
+    def close(self) -> None:
+        with self.lock:
+            ex, self.executor = self.executor, None
+        if ex:
+            ex.shutdown(wait=True)
+
+
 @dataclass
 class Params:
     explore: float = 0.5
@@ -183,8 +203,7 @@ class Radio:
         self._history: History | None = None
         self._taste: Taste | None = None
         self._taste_version: tuple = ()
-        self._executor: ThreadPoolExecutor | None = None
-        self._pool_lock = threading.Lock()
+        self._shared = _Pool()  # views of this Radio share it
         self._history_version: object = None
         self._load_lock = threading.Lock()  # one thread reloads history/taste; others wait, then reuse it
         self._warned_streams: set[str] = set()
@@ -227,20 +246,20 @@ class Radio:
         return list(self._pool().map(job, items))
 
     def _pool(self) -> ThreadPoolExecutor:
-        """One pool per Radio, shared by graph building and the background taste load, so at most
-        fetch_workers fetches run at once. _map called from inside a pooled job runs inline (no deadlock)."""
-        with self._pool_lock:
-            if self._executor is None:
-                self._executor = ThreadPoolExecutor(max_workers=self.a.fetch_workers, thread_name_prefix=POOL_PREFIX,
-                                                    initializer=_mark_pool_thread)
-            return self._executor
+        """One pool per Radio (and its views), shared by graph building and the background taste load, so at
+        most fetch_workers fetches run at once. _map called from inside a pooled job runs inline (no deadlock)."""
+        return self._shared.get(self.a.fetch_workers)
+
+    def view(self, providers: Providers) -> "Radio":
+        """The same engine for one listener: their own providers (taste, history, token-bound sources) and
+        their own taste/history snapshot, sharing this Radio's thread pool. Cheap; make one per call."""
+        r = Radio(providers, self.a, self.log)
+        r._shared = self._shared
+        return r
 
     def close(self) -> None:
-        """Stop the worker threads. Safe to call twice; a later fetch would start a fresh pool."""
-        with self._pool_lock:
-            ex, self._executor = self._executor, None
-        if ex:
-            ex.shutdown(wait=True)
+        """Stop the worker threads (of this Radio and its views). Safe to call twice."""
+        self._shared.close()
 
     def __enter__(self) -> "Radio":
         return self

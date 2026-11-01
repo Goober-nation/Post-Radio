@@ -108,7 +108,7 @@ def test_close_stops_threads_and_is_reusable():
     with Radio(Providers(resolver=Resolver(), similar=[Similar()], tracks=[Tracks()]), log=lambda *_: None) as r:
         first = r._pool()
         r._map(lambda x: x, [1, 2])
-    assert r._executor is None and first._shutdown
+    assert r._shared.executor is None and first._shutdown
     r.close()  # idempotent
     assert r._map(lambda x: x + 1, [1, 2]) == [2, 3] and r._pool() is not first
     r.close()
