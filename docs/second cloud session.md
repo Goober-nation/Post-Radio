@@ -93,6 +93,14 @@ requests (40 recording + 44 release-group lists). The MusicBrainz ones dominate:
 fetches an artist's MB titles whenever a name search returns several same-named Deezer artists, and
 MusicBrainz allows 1 request/s. Repeat runs on the same artists are fast (7-day cache).
 
+- **With a ListenBrainz token** (`$LISTENBRAINZ_TOKEN`, or in `.env` in the repo root), the same cold run took
+  22 s: 6 MusicBrainz requests instead of 84. LB's per-artist popularity catalogue (48 fast, parallel
+  requests) supplies the titles that settle almost every same-name case. The token also adds LB as a track
+  source and as the authoritative artist popularity. **Decision (user): use the token.**
+- **On hold:** skipping the MusicBrainz identity check in flow, i.e. taking the most-followed exact-name Deezer
+  match. A cold run without a token would drop to about 20–40 s, with a small risk of a namesake's catalogue
+  at a stop. A capped check (only the first ~10 ambiguous artists) was the middle option.
+
 ## Development notes
 
 - Setup, always in a venv:
