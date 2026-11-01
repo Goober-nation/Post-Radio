@@ -11,8 +11,9 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from .api import Listener, Recommender
-from .brand import DISPLAY_NAME
+from .brand import DISPLAY_NAME, VERSION
 from .errors import (
+    Cancelled,
     ConfigError,
     DataError,
     InvalidInput,
@@ -22,12 +23,17 @@ from .errors import (
     SourceUnavailable,
 )
 from .models import Like, Play
+from .results import SCHEMA
+
+API_VERSION = 1  # bumped when an endpoint or request field changes meaning or is removed; additions keep it
 
 STATUS = [(NotFound, 404), (InvalidInput, 422), (SourceAuthError, 422), (SourceUnavailable, 503),
           (ConfigError, 500), (DataError, 500)]
 
 
 def status_of(e: Exception) -> int:
+    if isinstance(e, Cancelled):
+        return 504 if e.timed_out else 499
     return next((c for cls, c in STATUS if isinstance(e, cls)), 500)
 
 
@@ -38,15 +44,17 @@ def http_error(e: Exception) -> HTTPException:
 
 class Jobs:
     """Long runs (20 s to minutes) as background jobs: submit returns an id at once; get() reports status, the
-    latest progress event and, once finished, the result or a typed error. Finished jobs expire after `ttl_s`."""
+    latest progress event and, once finished, the result or a typed error. cancel() stops a queued or running
+    job (status "cancelled"). Finished jobs expire after `ttl_s`."""
 
     def __init__(self, workers: int, ttl_s: float):
         self.pool = ThreadPoolExecutor(max_workers=max(1, workers), thread_name_prefix="postradio-job")
         self.ttl_s, self.jobs, self.lock = ttl_s, {}, threading.Lock()
 
-    def submit(self, kind: str, run: Callable[[Callable], object]) -> dict:
+    def submit(self, kind: str, run: Callable[[Callable, threading.Event], object]) -> dict:
+        """run(progress, cancel) does the work; it should pass `cancel` on to the Recommender call."""
         job = {"job_id": uuid.uuid4().hex[:12], "kind": kind, "status": "queued", "progress": None, "result": None,
-               "error": None, "created": time.time(), "finished": None}
+               "error": None, "created": time.time(), "finished": None, "cancel": threading.Event()}
         with self.lock:
             self._prune()
             self.jobs[job["job_id"]] = job
@@ -55,10 +63,16 @@ class Jobs:
             job["progress"] = p.to_dict()
 
         def work():
-            job["status"] = "running"
+            with self.lock:
+                if job["cancel"].is_set():
+                    return  # cancelled while queued; cancel() already finished it
+                job["status"] = "running"
             try:
-                job["result"] = run(on_progress).to_dict()
+                job["result"] = run(on_progress, job["cancel"]).to_dict()
                 job["status"] = "done"
+            except Cancelled as e:
+                job["status"] = "error" if e.timed_out else "cancelled"
+                job["error"] = {"type": "Cancelled", "message": str(e), "status": status_of(e)}
             except PostRadioError as e:
                 job["error"] = {"type": type(e).__name__, "message": str(e), "status": status_of(e)}
                 job["status"] = "error"
@@ -77,6 +91,20 @@ class Jobs:
             job = self.jobs.get(job_id)
         return self.view(job) if job else None
 
+    def cancel(self, job_id: str) -> dict | None:
+        """Ask a job to stop. A queued job is finished at once; a running one stops at its next stage or fetch
+        (usually within a second) and then reads "cancelled". A finished job is left as it is."""
+        with self.lock:
+            job = self.jobs.get(job_id)
+            if job is None:
+                return None
+            if job["finished"] is None:
+                job["cancel"].set()
+                if job["status"] == "queued":
+                    job["status"], job["finished"] = "cancelled", time.time()
+                    job["error"] = {"type": "Cancelled", "message": "cancelled", "status": 499}
+        return self.view(job)
+
     def _prune(self) -> None:
         now = time.time()
         for k in [k for k, j in self.jobs.items() if j["finished"] and now - j["finished"] > self.ttl_s]:
@@ -88,6 +116,9 @@ class Jobs:
             "status_url": f"/jobs/{job['job_id']}"}
 
     def close(self) -> None:
+        with self.lock:
+            for j in self.jobs.values():
+                j["cancel"].set()
         self.pool.shutdown(wait=False, cancel_futures=True)
 
 
@@ -141,6 +172,7 @@ class RadioRequest(BaseModel):
     auto_popularity: bool = False  # ignore configured default popularity; follow explore
     mix: dict[str, float] | None = None  # per-run stream multipliers 0..1, e.g. {"deezer-top": 0.2}
     dry: bool = False  # preview the artist graph only; nothing is stored
+    timeout_s: float | None = Field(None, gt=0)  # stop with 504 (or a job error) after this long
     listener: ListenerIn | None = None  # per-request taste; None = the server's configured taste
 
 
@@ -153,6 +185,7 @@ class FlowRequest(BaseModel):
     stops: int = Field(5, ge=1, le=20)
     rng_seed: int | None = None
     dry: bool = False  # preview the profile and genre path only; nothing is stored
+    timeout_s: float | None = Field(None, gt=0)  # stop with 504 (or a job error) after this long
     listener: ListenerIn | None = None  # per-request taste; None = the server's configured taste
 
 
@@ -205,7 +238,14 @@ def create_app(rec: Recommender | None = None) -> FastAPI:
         jobs.close()
         rec.close()  # release worker threads and the cache connection with the server
 
-    app = FastAPI(title=DISPLAY_NAME, lifespan=lifespan)
+    app = FastAPI(title=DISPLAY_NAME, version=VERSION, lifespan=lifespan)
+
+    @app.get("/health")
+    def health():
+        """For clients and container health checks: refuse to talk to a server whose api differs."""
+        release = rec.data_status().get("release") or {}
+        return {"ok": True, "version": VERSION, "api": API_VERSION, "schema": SCHEMA,
+                "store": rec.store is not None, "data_release": release.get("tag")}
 
     # plain `def` handlers run in FastAPI's threadpool, so blocking provider I/O is fine
     @app.post("/radio")
@@ -254,24 +294,31 @@ def create_app(rec: Recommender | None = None) -> FastAPI:
         _check_radio(req)
         li = req.listener.build() if req.listener else None
         args = req.model_dump(exclude={"listener"})
-        return jobs.submit("radio", lambda progress: rec.generate(**args, keep=not req.dry, listener=li,
-                                                                  progress=progress))
+        return jobs.submit("radio", lambda progress, cancel: rec.generate(**args, keep=not req.dry, listener=li,
+                                                                          progress=progress, cancel=cancel))
 
     @app.post("/jobs/flow", status_code=202)
     def flow_job(req: FlowRequest):
         li = req.listener.build() if req.listener else None
         args = req.model_dump(exclude={"listener"})
-        return jobs.submit("flow", lambda progress: rec.flow(**args, keep=not req.dry, listener=li,
-                                                             progress=progress))
+        return jobs.submit("flow", lambda progress, cancel: rec.flow(**args, keep=not req.dry, listener=li,
+                                                                     progress=progress, cancel=cancel))
 
     @app.post("/jobs/profile", status_code=202)
     def profile_job(listener: ListenerIn):
         li = listener.build()
-        return jobs.submit("profile", lambda progress: rec.profile(li, progress=progress))
+        return jobs.submit("profile", lambda progress, cancel: rec.profile(li, progress=progress, cancel=cancel))
 
     @app.get("/jobs/{job_id}")
     def job(job_id: str):
         got = jobs.get(job_id)
+        if got is None:
+            raise HTTPException(404, "unknown or expired job")
+        return got
+
+    @app.delete("/jobs/{job_id}")
+    def cancel_job(job_id: str):
+        got = jobs.cancel(job_id)
         if got is None:
             raise HTTPException(404, "unknown or expired job")
         return got

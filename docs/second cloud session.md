@@ -230,13 +230,34 @@ Decisions (user):
 - **Yandex-similar artists:** library behaviour, i.e. a graph source, no longer half-weight likes.
 - **MusicBrainz store installed** on the survey server (into Post-Radio's data volume).
 
-Post-Radio server work this needs (before the webpage switch):
-1. Job cancel (`DELETE /jobs/{id}`) and a per-job deadline: page closed, replaced by a new request, timeout.
-2. Queue info: position per job, `GET /jobs` for counts.
-3. `POST /profile` also returns the Yandex playlist summary (title, tracks, sample).
-4. `GET /genres` (the graph's genres) for genre autocomplete.
-5. `artist_popularity` and `via` on `PlaylistTrack` (the stats panel shows them).
-6. Dockerfile + compose example for `postradio serve`; an API version for compatibility checks.
+Post-Radio server work this needs, as decided (user: "post radio remains oblivious to whatever surrounds
+it"). Rule: Post-Radio takes taste in and returns a playlist plus the reasons for it; it knows nothing of
+users, pages, sessions or queues.
+
+Kept out (the webpage's job):
+- queue positions and counts: jobs already read `queued`/`running`, `server.job_workers` caps them;
+- `GET /genres`: the webpage reads the public CC0 `genre_graph.json` (repo or data release) itself;
+- the Yandex playlist title and sample tracks (display);
+- Deezer previews, login, survey, results files, per-user limits, the webpage's compose file.
+
+Done (this commit):
+1. **Cancel and deadline.** Library: `cancel=` (anything with `is_set()`) and `timeout_s=` on `generate`,
+   `flow`, `profile`; `errors.Cancelled(timed_out)`, checked at every stage and before every fetch (a
+   provider's `_safe` never swallows it). HTTP: `DELETE /jobs/{id}` (status `cancelled`, 499), `timeout_s`
+   on requests (sync 504, job error).
+2. **Why a track is there:** `PlaylistTrack.via` (radio: the linking sources; flow: `likes` or
+   `genre:<source>`) and `artist_popularity`.
+3. **Input counts:** `Profile.input`, `FlowPreview.input`, `Playlist.stats["input"]`: likes, artists,
+   considered, matched, with_genres, store. Counts only. Radio has none (it matches no likes).
+4. **`GET /health`:** version, `api` (server.API_VERSION, 1), `schema`, store present, data release tag. No
+   paths.
+5. **Dockerfile** (`postradio serve` on 8765, `POSTRADIO_HOME=/data`, uid 1000, health check) and
+   `docs/examples/compose.yaml`. Not built here: this container has no Docker daemon.
+6. Also: an unknown genre seed that no source knows raises `InvalidInput` with close names ("did you
+   mean: jazz rap?"). Free-form tag sources (LB tags) accept anything, so it only fires when every
+   genre source rejects it.
+
+Tests: `tests/test_service.py` (8), mutation-checked (removing the stage check or the new fields fails them).
 
 Then the webpage: an HTTP client instead of `app/radio.py`, deleting the moved modules, flow tab with dry
 preview, new error messages, compose with both services.

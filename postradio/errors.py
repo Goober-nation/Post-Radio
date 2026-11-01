@@ -6,13 +6,14 @@ base class and still tell the cases apart:
     ├── NotFound           well-formed, but the seed / release / playlist doesn't exist
     ├── ConfigError        a config file or setting is wrong
     ├── DataError          optional data is missing or corrupt (store, release checksum)
+    ├── Cancelled          the caller cancelled the run, or its deadline passed
     └── SourceError        an outside service failed
         ├── SourceUnavailable   unreachable, timing out, blocked (e.g. Yandex 451), or answering garbage
         └── SourceAuthError     a credential (token, password) was refused
 
 InvalidInput, NotFound, ConfigError and DataError also subclass ValueError, so older `except ValueError`
 callers keep working. A host app maps them to HTTP codes: InvalidInput 422, NotFound 404, SourceAuthError
-422, SourceUnavailable 503, DataError / ConfigError 500."""
+422, SourceUnavailable 503, Cancelled 504 (deadline) or 499 (cancelled), DataError / ConfigError 500."""
 
 
 class PostRadioError(Exception):
@@ -45,3 +46,12 @@ class SourceUnavailable(SourceError):
 
 class SourceAuthError(SourceError):
     """A credential (ListenBrainz token, Navidrome password) was refused."""
+
+
+class Cancelled(PostRadioError):
+    """The run was stopped: the caller's cancel event was set (`timed_out` False) or its deadline passed
+    (`timed_out` True). Checked between stages and between fetches, so it stops within a second or so."""
+
+    def __init__(self, message: str = "cancelled", timed_out: bool = False):
+        super().__init__(message)
+        self.timed_out = timed_out

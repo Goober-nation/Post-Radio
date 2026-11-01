@@ -8,6 +8,11 @@ from typing import Any
 
 SCHEMA = 1  # bumped only if an existing field changes meaning or is removed
 
+# What flow / profile made of the listener's taste (Profile.input, FlowPreview.input, Playlist.stats["input"]):
+# likes received, distinct artists, artists considered (the most-liked, capped), matched to MusicBrainz,
+# with genres from any source, and whether the local artist store was used. Thin input = weak results.
+INPUT = ("likes", "artists", "considered", "matched", "with_genres", "store")
+
 
 def _pick(cls, d: dict) -> dict:
     names = {f.name for f in fields(cls)}
@@ -22,6 +27,7 @@ class PlaylistTrack:
     recording_mbid: str | None = None
     deezer_id: int | None = None
     popularity: float | None = None  # 0..1 within the artist's catalogue
+    artist_popularity: float | None = None  # 0..1 the artist's own fame, when a source reported it
     score: float | None = None  # ranking score (relative within one playlist)
     sources: list[str] = field(default_factory=list)  # streams that offered it: deezer-top, lb, troi, ...
     familiar: bool = False  # the listener already knows (plays or likes) this artist
@@ -30,6 +36,8 @@ class PlaylistTrack:
     path: list[str] | None = None  # radio: artists from the seed to this one
     stop: str | None = None  # flow: the genre stop it belongs to
     taste: dict[str, float] | None = None  # radio: {"artist", "track", "similar_boost"} taste factors
+    via: list[str] | None = None  # why the artist is in: radio: the sources linking it (lb, deezer, genre...);
+    #                               flow: "likes" or "genre:<source>"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -62,7 +70,7 @@ class Playlist:
     profile: list[dict[str, Any]] | None = None  # flow: [{"genre", "share"}] the listener's genres
     familiarity: float | None = None  # flow: mean own-genre share along the path (1 = all yours)
     flow_score: float | None = None  # flow: mean genre closeness of neighbouring tracks
-    stats: dict[str, Any] = field(default_factory=dict)  # candidates, graph_size, mode, mix, unheard, ...
+    stats: dict[str, Any] = field(default_factory=dict)  # candidates, graph_size, mode, mix, unheard, input ...
     result_id: str | None = None  # set only when kept (keep=True)
     created_at: str | None = None
     default_name: str | None = None
@@ -127,6 +135,7 @@ class Profile:
     """The listener's genres (flow's starting point) and the nearest genres beyond them."""
     profile: list[dict[str, Any]]  # [{"genre", "share"}]
     nearby: list[dict[str, Any]]  # [{"genre", "score", "hop"}]
+    input: dict[str, Any] | None = None  # see INPUT
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -145,6 +154,7 @@ class FlowPreview:
     graph_learned: bool
     profile: list[dict[str, Any]]
     nearby: list[dict[str, Any]]
+    input: dict[str, Any] | None = None  # see INPUT
     dry: bool = True
 
     def to_dict(self) -> dict[str, Any]:

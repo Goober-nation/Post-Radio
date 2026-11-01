@@ -7,6 +7,7 @@
 
 Results live in an in-process TTL cache until saved; nothing touches disk unless save() is called.
 """
+import difflib
 import json
 import logging
 import random
@@ -110,7 +111,8 @@ def _radio_playlist(res: dict, rng_seed: int) -> Playlist:
                             recording_mbid=r.get("recording_mbid"), deezer_id=r.get("deezer_id"),
                             popularity=r.get("popularity"), score=r.get("score"), sources=r.get("sources") or [],
                             familiar=bool(r.get("known_artist")), hop=r.get("hop"), path=r.get("path"),
-                            taste=r.get("taste")) for r in res["tracks"]]
+                            taste=r.get("taste"), artist_popularity=r.get("artist_popularity"),
+                            via=r.get("via")) for r in res["tracks"]]
     s = res["seed"]
     seed = Seed(s["artist"], s["artist_mbid"], s["track"], s.get("popularity"), res.get("genres"), res.get("genre_op"))
     stats = {k: res.get(k) for k in ("mode", "mix", "unheard", "graph_size", "candidates")}
@@ -121,9 +123,11 @@ def _flow_playlist(res: dict, rng_seed: int) -> Playlist:
     tracks = [PlaylistTrack(r["artist"], r["title"], artist_mbid=r.get("artist_mbid"),
                             recording_mbid=r.get("recording_mbid"), deezer_id=r.get("deezer_id"),
                             popularity=r.get("popularity"), score=r.get("score"), sources=r.get("sources") or [],
-                            familiar=bool(r.get("familiar")), genres=r.get("genres") or [], stop=r.get("stop"))
+                            familiar=bool(r.get("familiar")), genres=r.get("genres") or [], stop=r.get("stop"),
+                            artist_popularity=r.get("artist_popularity"), via=r.get("via"))
               for r in res["tracks"]]
-    stats = {"stops": res.get("stops"), "candidates": res.get("candidates"), "graph_learned": res.get("graph_learned")}
+    stats = {"stops": res.get("stops"), "candidates": res.get("candidates"), "graph_learned": res.get("graph_learned"),
+             "input": res.get("input")}
     return Playlist("flow", tracks, res["explore"], res["popularity"], rng_seed, genre_path=res["path"],
                     profile=res["profile"], familiarity=res["familiarity"], flow_score=res["flow_score"], stats=stats)
 
@@ -254,11 +258,17 @@ class Recommender:
                          history=history, feedback=feedback, track_similarity=LBSimilarRecordings(http),
                          genres=[tags, dz] + ([mb] if self.store or self.genre_index else []))
 
-    def _radio_for(self, listener: "Listener | None", progress: Callable[[Progress], None] | None = None) -> Radio:
+    def _radio_for(self, listener: "Listener | None", progress: Callable[[Progress], None] | None = None,
+                   cancel=None, timeout_s: float | None = None) -> Radio:
         """The shared engine, or a per-call view of it with this listener's taste, history and token and/or
-        this call's progress handler."""
+        this call's progress handler, cancel event and deadline."""
+        if timeout_s is not None and timeout_s <= 0:
+            raise InvalidInput("timeout_s must be positive")
+        deadline = time.monotonic() + timeout_s if timeout_s else None
         if listener is None:
-            return self.radio.view(self.radio.p, progress) if progress else self.radio
+            if progress or cancel is not None or deadline:
+                return self.radio.view(self.radio.p, progress, cancel, deadline)
+            return self.radio
         a = self.cfg.advanced
         yandex = (YandexLikes(self.http, listener.yandex_playlist, listener.yandex_tracks, log=self.log)
                   if listener.yandex_playlist else None)
@@ -279,7 +289,7 @@ class Recommender:
         if listener.lb_user:
             histories.append(ListenBrainzHistory(self.http, listener.lb_user, token, refresh_s=a.history_refresh_s))
         history = MergedHistory(histories, self.log) if histories else NoHistory()
-        return self.radio.view(self._providers(token or "", history, feedback, yandex), progress)
+        return self.radio.view(self._providers(token or "", history, feedback, yandex), progress, cancel, deadline)
 
     # ------------------------------------------------------------------ radio
     def generate(self, *, artist: str | None = None, track: str | None = None, artist_mbid: str | None = None,
@@ -288,12 +298,14 @@ class Recommender:
                  per_artist: int | None = None, rng_seed: int | None = None, auto_popularity: bool = False,
                  unheard: str | None = None, mix: dict[str, float] | None = None, dry: bool = False,
                  keep: bool = False, listener: Listener | None = None,
-                 progress: Callable[[Progress], None] | None = None) -> Playlist | GraphPreview:
+                 progress: Callable[[Progress], None] | None = None, cancel=None,
+                 timeout_s: float | None = None) -> Playlist | GraphPreview:
         """Unset knobs fall back to config defaults. auto_popularity=True ignores a configured default
         popularity so it follows explore. Without rng_seed a seed is picked and reported (`rng_seed` in the
         result), so any run can be repeated. dry=True previews the artist graph without picking tracks.
         listener: this call's taste/history/token instead of the configured ones (see Listener).
-        progress: called with a Progress event at each stage (from worker threads; keep it quick)."""
+        progress: called with a Progress event at each stage (from worker threads; keep it quick).
+        cancel (anything with is_set(), e.g. threading.Event) / timeout_s: stop the run with errors.Cancelled."""
         rng_seed = new_seed() if rng_seed is None else rng_seed
         d = self.cfg.defaults
         pop = popularity if popularity is not None else (None if auto_popularity else d.popularity)
@@ -308,7 +320,9 @@ class Recommender:
                 raise InvalidInput(f"{name} must be in [0, 1]")
         if sum(x is not None for x in (artist, track, artist_mbid, recording_mbid, genres or None)) != 1:
             raise InvalidInput("give exactly one seed: artist, track, artist_mbid, recording_mbid or genres")
-        res = self._radio_for(listener, progress).generate(
+        if genres:
+            self._check_genres(genres)
+        res = self._radio_for(listener, progress, cancel, timeout_s).generate(
             p, dry=dry, artist=artist, track=track, artist_mbid=artist_mbid, recording_mbid=recording_mbid,
             genres=genres, genre_op=genre_op)
         if dry:
@@ -321,7 +335,8 @@ class Recommender:
     def flow(self, *, explore: float | None = None, popularity: float | None = None, n: int | None = None,
              per_artist: int | None = None, stops: int = 5, rng_seed: int | None = None, dry: bool = False,
              keep: bool = False, listener: Listener | None = None,
-             progress: Callable[[Progress], None] | None = None) -> Playlist | FlowPreview:
+             progress: Callable[[Progress], None] | None = None, cancel=None,
+             timeout_s: float | None = None) -> Playlist | FlowPreview:
         """A playlist from the user's own likes, no seed: a path of genre stops through the genre graph (explore =
         how far from their genres), filled with familiar and new artists. Needs likes (Yandex playlist,
         Navidrome stars, LB loves or imported loves). Without rng_seed a seed is picked and reported, so the
@@ -337,21 +352,35 @@ class Recommender:
         for name, v in (("explore", p.explore), ("popularity", p.popularity)):
             if v is not None and not 0 <= v <= 1:
                 raise InvalidInput(f"{name} must be in [0, 1]")
-        res = self._radio_for(listener, progress).flow(p, self.genre_graph(), dry=dry)
+        res = self._radio_for(listener, progress, cancel, timeout_s).flow(p, self.genre_graph(), dry=dry)
         if dry:
             return FlowPreview(rng_seed, res["path"], res["explore"], res["popularity"], res["stops"],
                                res["tracks_per_stop"], res["familiarity"], res["graph_learned"], res["profile"],
-                               res["nearby"])
+                               res["nearby"], res.get("input"))
         pop = "auto" if p.popularity is None else f"{p.popularity:.2f}"
         name = f"{datetime.now(UTC):%Y-%m-%d}_flow_e{p.explore:.2f}_p{pop}"
         return self._remember(_flow_playlist(res, rng_seed), name, keep)
 
-    def profile(self, listener: Listener | None = None,
-                progress: Callable[[Progress], None] | None = None) -> Profile:
+    def profile(self, listener: Listener | None = None, progress: Callable[[Progress], None] | None = None,
+                cancel=None, timeout_s: float | None = None) -> Profile:
         """The taste profile flow mode would use: the user's genres and their nearest neighbours."""
-        _, _, _, profile, spread = self._radio_for(listener, progress).profile(self.genre_graph())
+        radio = self._radio_for(listener, progress, cancel, timeout_s)
+        _, _, _, profile, spread, used = radio.profile(self.genre_graph())
         return Profile([{"genre": g, "share": s} for g, s in profile.items()],
-                       [{"genre": s.genre, "score": s.score, "hop": s.hop} for s in spread if s.hop > 0][:20])
+                       [{"genre": s.genre, "score": s.score, "hop": s.hop} for s in spread if s.hop > 0][:20], used)
+
+    def _check_genres(self, genres: list[str]) -> None:
+        """A genre no source knows can only give an empty radio: say so, with the closest known names."""
+        known = {g.casefold(): g for g in self.genre_graph().nodes}
+        for prov in self.radio.p.genres:
+            known |= {g.casefold(): g for g in self.radio._safe(prov.supported_genres, default=[]) or []}
+        for g in genres:
+            if g.casefold() in known:
+                continue
+            if all(g in (self.radio._safe(prov.unsupported, [g]) or []) for prov in self.radio.p.genres):
+                close = difflib.get_close_matches(g.casefold(), list(known), n=3, cutoff=0.6)
+                hint = f"; did you mean: {', '.join(known[c] for c in close)}?" if close else ""
+                raise InvalidInput(f"unknown genre {g!r}{hint}")
 
     def _mix(self, overrides: dict[str, float] | None) -> dict[str, float]:
         """advanced.mix stream caps with per-run overrides. Keys: deezer-top, lb, deezer-radio, troi,

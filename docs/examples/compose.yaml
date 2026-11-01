@@ -1,0 +1,21 @@
+# Post-Radio as a service next to a host app. The host talks to http://postradio:8765 over compose's own
+# network; no port is published, so nothing outside the project reaches it. (It needs outbound internet
+# for MusicBrainz, ListenBrainz and Deezer, so don't put it on an `internal: true` network.)
+# The container runs as uid 1000: the ./postradio folder must be writable by it.
+# Install the optional data (~600 MB) once:
+#   docker compose run --rm postradio postradio data fetch
+services:
+  postradio:
+    build: https://github.com/Goober-nation/Post-Radio.git#flow-integration
+    volumes:
+      - ./postradio:/data            # cache/, data/, state/ and an optional config.yaml
+    environment:
+      LISTENBRAINZ_TOKEN: ${LISTENBRAINZ_TOKEN:-}   # optional; makes cold flows ~10x faster
+    restart: unless-stopped
+
+  app:                               # your host app
+    image: example/your-app
+    environment:
+      POSTRADIO_URL: http://postradio:8765
+    depends_on:
+      postradio: {condition: service_healthy}

@@ -82,9 +82,22 @@ for t in flow.tracks:                 # PlaylistTrack
     t.recording_mbid, t.deezer_id     # when the source had them (Deezer tracks: usually no recording MBID)
     t.familiar                        # the user already knows this artist
     t.stop or t.hop                   # flow: genre stop; radio: graph distance from the seed
+    t.via                             # why the artist is in: radio: linking sources; flow: "likes" / "genre:<source>"
+    t.artist_popularity               # 0..1 the artist's fame, when a source reported it
 flow.genre_path, flow.rng_seed        # pass rng_seed back to repeat the run
+flow.stats["input"]                   # what was usable of the taste you passed (below)
 flow.to_dict()                        # plain JSON; Playlist.from_dict() reads it back
 ```
+
+**How much of the input was usable:** flow results (`stats["input"]`), flow previews and profiles (`.input`)
+count the likes received, distinct artists, artists considered (the most-liked, capped), matched to
+MusicBrainz, and with genres, plus whether the local store was used:
+
+```python
+{"likes": 952, "artists": 176, "considered": 176, "matched": 133, "with_genres": 121, "store": True}
+```
+
+Few matched artists means a weak profile: worth telling the user, or asking for more likes.
 
 **Repeatable runs:** every call reports `rng_seed`. Passing it back gives the same path, and the same
 playlist while the cached API answers are unchanged.
@@ -110,16 +123,28 @@ rec.flow(explore=0.5, listener=listener, progress=on_progress)
 - **Logging:** prose goes to the standard `logging` logger `postradio`.
 - **Over HTTP:** `POST /jobs/flow` and `GET /jobs/{id}` do the same.
 
+## Stopping a run
+
+```python
+stop = threading.Event()
+rec.flow(explore=0.5, listener=listener, cancel=stop)   # stop.set() from another thread stops it
+rec.flow(explore=0.5, listener=listener, timeout_s=60)  # or a deadline
+```
+
+Both raise `postradio.errors.Cancelled` (`timed_out` tells which) at the next stage or fetch, usually within
+a second. Fetches already sent finish in the background, and their answers still fill the cache.
+
 ## Errors
 
 Catch `postradio.errors.PostRadioError`, or the specific class:
 
 | class | when | suggested HTTP |
 |---|---|---|
-| `InvalidInput` | Bad parameters, a bad playlist link, no likes to build a flow from | 422 |
+| `InvalidInput` | Bad parameters, a bad playlist link, no likes to build a flow from, a genre no source knows (the message suggests close names) | 422 |
 | `NotFound` | The seed artist or track doesn't exist | 404 |
 | `SourceAuthError` | A credential was refused (Navidrome login) | 422 |
 | `SourceUnavailable` | A service is down or blocked (e.g. Yandex 451 in some regions) | 503 |
+| `Cancelled` | The cancel event was set, or `timeout_s` passed | 499 / 504 |
 | `DataError`, `ConfigError` | Broken data release or settings | 500 |
 
 A single failing source (one ListenBrainz endpoint, Deezer for one artist) doesn't raise. That source
@@ -131,3 +156,16 @@ contributes nothing, the run continues, and the log says why.
   minutes (cold, no token). Run them in a worker thread or background job.
 - Concurrent calls share per-host rate limits. MusicBrainz is held to 1 request/s for the whole process,
   so more threads don't make MusicBrainz-heavy work faster.
+
+## Running the server
+
+For a host that isn't Python, or should not install Post-Radio: run `postradio serve` in its own container
+(`Dockerfile` in the repo root, compose example in `docs/examples/compose.yaml`) and call it over HTTP.
+
+- `GET /health`: `{"ok", "version", "api", "schema", "store", "data_release"}`. Check `api` at start-up and
+  refuse to run against a different one; `schema` is the result format (also in every result).
+- Long runs as jobs: `POST /jobs/flow|radio|profile` (202 + `status_url`), poll `GET /jobs/{id}`,
+  `DELETE /jobs/{id}` to cancel (status `cancelled`). At most `server.job_workers` run at once; the rest
+  read `queued`. Queues per user, positions and limits are the host's to keep.
+- Sync calls (`POST /flow`, `/radio`) and jobs take `timeout_s`; a sync call past it answers 504.
+- Requests carry the listener (`likes`, `plays`, `yandex_playlist`, `lb_token`, ...) as in the library.

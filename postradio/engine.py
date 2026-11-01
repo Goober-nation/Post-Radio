@@ -11,6 +11,7 @@ import math
 import random
 import re
 import threading
+import time
 from collections import defaultdict
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -19,7 +20,7 @@ from dataclasses import dataclass, field
 from . import flow as flow_mod
 from .brand import POOL_PREFIX
 from .config import Advanced
-from .errors import InvalidInput, NotFound
+from .errors import Cancelled, InvalidInput, NotFound
 from .genres import GenreGraph
 from .models import Artist, Edge, History, Taste, Track, is_mbid
 from .providers import (
@@ -200,10 +201,13 @@ class Run:
 
 class Radio:
     def __init__(self, providers: Providers, adv: Advanced | None = None, log: Callable[[str], None] = logger.info,
-                 progress: Callable[[Progress], None] | None = None):
-        """log: prose for people (default: the `postradio` logger). progress: structured events for a host app."""
+                 progress: Callable[[Progress], None] | None = None, cancel=None, deadline: float | None = None):
+        """log: prose for people (default: the `postradio` logger). progress: structured events for a host app.
+        cancel: anything with is_set() (e.g. threading.Event); deadline: time.monotonic() value. Either stops
+        the run with Cancelled at the next stage or fetch."""
         self.p, self.log = providers, log
         self.progress = progress
+        self.cancel, self.deadline = cancel, deadline
         self.a = adv or Advanced()
         self.junk = re.compile(self.a.junk_title_pattern, re.IGNORECASE)
         self._history: History | None = None
@@ -235,6 +239,8 @@ class Radio:
         or malformed payload costs that source's contribution, never the whole run."""
         try:
             return fn(*args)
+        except Cancelled:
+            raise
         except Exception as e:  # noqa: BLE001 - provider boundary: anything a third-party API throws
             owner = getattr(getattr(fn, "__self__", None), "name", None) or type(getattr(fn, "__self__", fn)).__name__
             self.log(f"{what or owner}: skipped after {type(e).__name__}: {e}")
@@ -245,6 +251,7 @@ class Radio:
         in Http, so this only overlaps network latency; it never raises the request rate past the APIs' limits.
         With `stage`, each finished item is reported as progress (done/total)."""
         def job(x):
+            self._check()  # a cancelled run skips its queued fetches instead of waiting for them
             return self._safe(fn, x, what=getattr(fn, "__name__", "fetch"))
 
         total = len(items)
@@ -267,17 +274,25 @@ class Radio:
         most fetch_workers fetches run at once. _map called from inside a pooled job runs inline (no deadlock)."""
         return self._shared.get(self.a.fetch_workers)
 
+    def _check(self) -> None:
+        if self.cancel is not None and self.cancel.is_set():
+            raise Cancelled("cancelled")
+        if self.deadline is not None and time.monotonic() > self.deadline:
+            raise Cancelled("deadline passed", timed_out=True)
+
     def _report(self, stage: str, done: int | None = None, total: int | None = None, detail: str | None = None):
+        self._check()
         if self.progress:
             try:
                 self.progress(Progress(stage, done, total, detail))
             except Exception as e:  # noqa: BLE001 - a host's progress handler must never break a run
                 self.log(f"progress handler failed: {e}")
 
-    def view(self, providers: Providers, progress: Callable[[Progress], None] | None = None) -> "Radio":
+    def view(self, providers: Providers, progress: Callable[[Progress], None] | None = None, cancel=None,
+             deadline: float | None = None) -> "Radio":
         """The same engine for one listener: their own providers (taste, history, token-bound sources) and
         their own taste/history snapshot, sharing this Radio's thread pool. Cheap; make one per call."""
-        r = Radio(providers, self.a, self.log, progress)
+        r = Radio(providers, self.a, self.log, progress, cancel, deadline)
         r._shared = self._shared
         return r
 
@@ -675,13 +690,15 @@ class Radio:
     # ---------- flow mode ----------
     def profile(self, graph: GenreGraph):
         """The user's genre profile from their dated likes: (top artists, resolved artists, per-source artist
-        genres, {genre: share}, spread over the graph). Raises InvalidInput when there's nothing to go on."""
+        genres, {genre: share}, spread over the graph, what was used of the input).
+        Raises InvalidInput when there's nothing to go on."""
         a = self.a
         self._report("likes")
         likes = [x for prov in self.p.feedback for x in self._safe(prov.liked, default=[])]
         if not likes:
             raise InvalidInput("flow needs likes: a Yandex playlist, Navidrome stars, LB loves or imported loves")
         weights = flow_mod.artist_weights(((f.artist, at) for f, at in likes), a.flow_half_life_days)
+        n_artists = len(weights)
         top = sorted(weights, key=lambda k: (-weights[k], k))[: a.flow_profile_artists]
         weights = {k: weights[k] for k in top}
         resolver = self.p.profile_resolver or self.p.resolver
@@ -700,12 +717,16 @@ class Radio:
         calls = getattr(getattr(resolver, "http", None), "calls", 0) - calls_before
         self.log(f"profile: {sum(1 for v in resolved.values() if v)} of {len(top)} artists resolved, "
                  f"{calls} network calls")
+        with_genres = set().union(*(got for got, _ in sources)) if sources else set()
+        used = {"likes": len(likes), "artists": n_artists, "considered": len(top),
+                "matched": sum(1 for v in resolved.values() if v), "with_genres": len(with_genres),
+                "store": getattr(resolver, "store", None) is not None}
         profile = flow_mod.taste_profile(weights, sources)
         if not profile:
             raise InvalidInput("flow: no genres found for the liked artists")
         self.log("profile: " + ", ".join(f"{g} {s:.2f}" for g, s in list(profile.items())[:8]))
         spread = graph.spread(profile, a.genre_spread_hops, a.genre_spread_decay)
-        return top, resolved, sources, profile, spread
+        return top, resolved, sources, profile, spread, used
 
     def flow(self, p: Params, graph: GenreGraph, dry: bool = False) -> dict:
         """A playlist with no seed: the user's taste profile (from their likes) spread over the genre graph, a
@@ -716,7 +737,7 @@ class Radio:
                                      destination_width=a.flow_destination_width,
                                      destination_reach=a.flow_destination_reach)
         history, taste = self.history(), self.taste()
-        top, resolved, sources, profile, spread = self.profile(graph)
+        top, resolved, sources, profile, spread, used = self.profile(graph)
         roots = {g: n.roots for g, n in graph.nodes.items()}
         path = flow_mod.plan_path(spread, graph.adj, p.explore, p.stops, random.Random(rng.random()), roots, cfg)
         self.log("path: " + " -> ".join(path))
@@ -725,7 +746,7 @@ class Radio:
         if dry:  # preview: profile and path only, no artist pools or catalogues
             return {"dry": True, "rng_seed": p.seed, "path": path, "explore": p.explore, "popularity": p.popularity,
                     "stops": p.stops, "tracks_per_stop": counts, "familiarity": flow_mod.familiarity(path, spread),
-                    "graph_learned": graph.learned,
+                    "graph_learned": graph.learned, "input": used,
                     "profile": [{"genre": g, "share": s} for g, s in list(profile.items())[:20]],
                     "nearby": [{"genre": s.genre, "score": s.score, "hop": s.hop} for s in spread if s.hop > 0][:20]}
 
@@ -735,32 +756,32 @@ class Radio:
             for x, gs in genres_of.items():
                 artist_genres.setdefault(x, [])
                 artist_genres[x] += [g for g in gs if g not in artist_genres[x]]
-        pools_artists: dict[str, list[tuple[Artist, list[str], bool]]] = {}
+        pools_artists: dict[str, list[tuple[Artist, list[str], bool, str]]] = {}
         for i, (g, k) in enumerate(zip(path, counts, strict=True), 1):
             self._report("pools", i, len(path), g)
             # about 3 candidates per wanted track of each kind keeps catalogue fetches proportional to n
             new_k = round(k * p.explore)
             fam_cap = min(a.flow_familiar_artists, 3 * max(1, k - new_k))
             new_cap = min(a.flow_new_artists, 3 * max(1, new_k))
-            fam = [(resolved.get(x) or Artist(x), artist_genres.get(x, []), True) for x in top
+            fam = [(resolved.get(x) or Artist(x), artist_genres.get(x, []), True, "likes") for x in top
                    if g in artist_genres.get(x, [])][:fam_cap]
-            new: dict[str, tuple[Artist, list[str], bool]] = {}
+            new: dict[str, tuple[Artist, list[str], bool, str]] = {}
             for prov in self.p.genres:
                 if self._safe(prov.unsupported, [g]):
                     continue
                 for ar in self._safe(prov.genre_artists, [g], "or", p.pop, new_cap * 2):
                     known = history.plays(ar) or taste.artist(ar) > 0
-                    new.setdefault(ar.key, (ar, [g], bool(known)))
+                    new.setdefault(ar.key, (ar, [g], bool(known), f"genre:{prov.name}"))
             fam_keys = {f[0].key for f in fam}
             pools_artists[g] = fam + [v for v in new.values() if v[0].key not in fam_keys][:new_cap]
 
-        everyone = {ar.key: ar for arts in pools_artists.values() for ar, _, _ in arts}
+        everyone = {ar.key: ar for arts in pools_artists.values() for ar, _, _, _ in arts}
         catalogues = dict(zip(everyone, self._map(self._top_tracks, list(everyone.values()), "catalogues"),
                               strict=True))
         pools: dict[str, list[flow_mod.Pick]] = {}
         for g, arts in pools_artists.items():
             picks = []
-            for ar, gs, familiar in arts:
+            for ar, gs, familiar, via in arts:
                 scored = []
                 for t in catalogues.get(ar.key) or []:
                     if history.heard(t) or taste.track(t):  # liked tracks don't come back; hated ones never
@@ -768,7 +789,9 @@ class Radio:
                     s = pop_fit(t.popularity, p) * artist_pop_fit(t.artist.popularity or ar.popularity, p)
                     s *= self.taste_factor(taste.artist(ar)) * self.taste_factor(taste.track(t))
                     s *= 1 - a.jitter / 2 + a.jitter * rng.random()
-                    scored.append(flow_mod.Pick(t, gs or [g], familiar, s, extra={"artist_mbid": ar.mbid}))
+                    scored.append(flow_mod.Pick(t, gs or [g], familiar, s, extra={
+                        "artist_mbid": ar.mbid, "via": [via],
+                        "artist_popularity": t.artist.popularity or ar.popularity}))
                 picks += sorted(scored, key=lambda c: -c.score)[: a.flow_tracks_per_artist]
             pools[g] = picks
         self._report("fill")
@@ -781,12 +804,13 @@ class Radio:
             "profile": [{"genre": g, "share": s} for g, s in list(profile.items())[:20]],
             "familiarity": flow_mod.familiarity(path, spread),
             "flow_score": flow_mod.flow_score(tracks, graph.adj),
-            "graph_learned": graph.learned,
+            "graph_learned": graph.learned, "input": used,
             "candidates": sum(len(v) for v in pools.values()),
             "tracks": [{"artist": c.artist, "title": c.title,
                         "artist_mbid": c.track.artist.mbid or c.extra.get("artist_mbid"),
                         "stop": c.stop, "genres": c.genres[:3],
                         "familiar": c.familiar, "score": round(c.score, 4),
                         "popularity": round(c.track.popularity, 2), "sources": sorted(c.track.sources),
+                        "artist_popularity": c.extra.get("artist_popularity"), "via": c.extra.get("via"),
                         "recording_mbid": c.track.recording_mbid, "deezer_id": c.track.deezer_id} for c in tracks],
         }
