@@ -27,6 +27,16 @@ class RadioRequest(BaseModel):
     mix: dict[str, float] | None = None  # per-run stream multipliers 0..1, e.g. {"deezer-top": 0.2}
 
 
+class FlowRequest(BaseModel):
+    """A playlist from the configured likes (Yandex playlist, Navidrome, LB loves, imported loves); no seed."""
+    explore: float | None = Field(None, ge=0, le=1)
+    popularity: float | None = Field(None, ge=0, le=1)
+    n: int | None = Field(None, ge=1, le=500)
+    per_artist: int | None = Field(None, ge=1)
+    stops: int = Field(5, ge=1, le=20)
+    rng_seed: int | None = None
+
+
 class ArtistRef(BaseModel):
     name: str = Field(min_length=1)
     mbid: str | None = None
@@ -86,6 +96,20 @@ def create_app(rec: Recommender | None = None) -> FastAPI:
         except NotFound as e:
             raise HTTPException(404, str(e)) from e
         except ValueError as e:  # InvalidInput and any other validation error
+            raise HTTPException(422, str(e)) from e
+
+    @app.post("/flow")
+    def flow(req: FlowRequest):
+        try:
+            return rec.flow(**req.model_dump())
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from e
+
+    @app.get("/profile")
+    def profile():
+        try:
+            return rec.profile()
+        except ValueError as e:
             raise HTTPException(422, str(e)) from e
 
     @app.get("/deep-cuts")

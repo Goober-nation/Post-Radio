@@ -39,6 +39,17 @@ Results are held in memory (`storage.result_ttl_s`, `result_cache_size`) until s
 HTTP (`postradio serve`): `POST /radio`, `GET /deep-cuts`, `GET /results/{id}`, `POST /results/{id}/save`,
 `GET /saved`, `GET /saved/{name}`.
 
+## Flow: a playlist from your likes, no seed
+
+```
+postradio profile --yandex <playlist link>                # your genres and the ones nearby
+postradio flow --yandex <playlist link> -e 0.5 -n 30      # 0 = tour your genres, 1 = head far outside them
+```
+Your likes come from a Yandex playlist, Navidrome stars, LB loves or imported loves. They become a genre
+profile, which becomes a path of genre stops (`--stops`, 5). Each stop is filled with familiar and new
+artists, ordered so neighbouring tracks share genres. `-p` sets how famous the picks are; `--rng-seed`
+repeats a run. The MusicBrainz store (`postradio data fetch`) makes the profile instant and more precise.
+
 ## Taste (loves / hates / ratings)
 
 On by default (`feedback.enabled`, or `--no-feedback`). Sources, in priority order (the first with an

@@ -82,6 +82,46 @@ flowchart TB
 - A `genre_graph.json` in `data_dir` (installed with the store it was built against) wins over the
   packaged graph.
 
+## Flow mode (`Radio.flow`, `postradio/flow.py`)
+
+A playlist with no seed, from the user's own likes. `postradio flow`, `POST /flow` and `Recommender.flow()`
+all run it; `postradio profile` (`GET /profile`) shows its first step on its own.
+
+1. **Likes:** every feedback source's `liked()` gives positive opinions with dates; Yandex dates each
+   track by when it was added. Each artist's weight is the sum of its likes, halving every
+   `flow_half_life_days` (180) back from the newest like. The `flow_profile_artists` (150) most-liked
+   artists go on.
+2. **Profile:** artists are resolved through the resolver, which uses the store when installed.
+   - Genres per artist come from each tagger in `Providers.profile_taggers`: `mb` (MusicBrainz) and, with
+     a playlist, `yandex` (album genres).
+   - A genre counts 1/rank. Each source is normalised on its own, then blended by
+     `flow_source_shares` (0.7 / 0.3).
+   - The result is `{genre: share}`, spread over the genre graph (`genre_spread_hops`, `genre_spread_decay`).
+3. **Path:** `plan_path` picks `stops` genres, starting at one of the 3 strongest own genres.
+   - Below `flow_destination_from` (0.3), it walks the user's own genres.
+   - From there, it first routes along the strongest links to a destination outside the start genre's
+     Wikidata family. The destination is one the user has little of, at relative closeness
+     1 − `flow_destination_reach` × explore. Closeness is measured against the closest eligible genre,
+     so broad profiles still respond to explore.
+   - After the destination, the start family is damped by (1 − explore).
+4. **Pools per stop:** familiar artists are liked artists carrying the stop's genre. New artists come from
+   every `GenreSource` that knows the genre: the MusicBrainz store or index, LB tags, Deezer.
+   - Artists the user plays or likes count as familiar.
+   - Each stop takes about 3 candidates per wanted track of each kind, so catalogue fetches scale with `n`.
+5. **Tracks:** catalogues come from the existing `TopTracks` sources (Deezer, LB). A track's score is
+   `pop_fit × artist_pop_fit × artist taste × track taste × jitter`. Played, liked and hated tracks and
+   junk titles are dropped. Each artist keeps its `flow_tracks_per_artist` (5) best.
+6. **Fill:** each stop gets `n / stops` tracks.
+   - About explore × k of them come from new artists; a stop short of one kind takes the other.
+   - There are at most `per_artist` tracks per artist and one per song (title without
+     "(feat…)"/brackets).
+   - A stop that still comes up short passes its remainder on to the other stops.
+7. **Order:** within a stop, tracks that carry the previous stop's genre come first and the next stop's
+   last. The same artist is kept `flow_artist_gap` (4) tracks apart, swapping only within a stop.
+
+The result has the `path`, the top of the `profile`, `familiarity` (mean own share along the path) and
+`flow_score` (mean genre closeness of neighbouring tracks). It is stored and saved like radio results.
+
 ## Yandex Music (`providers/yandex.py`)
 
 With `sources.yandex_playlist` set (or `radio --yandex URL`), a public Yandex playlist, usually your likes:

@@ -15,9 +15,11 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
+from . import flow as flow_mod
 from .brand import POOL_PREFIX
 from .config import Advanced
 from .errors import InvalidInput, NotFound
+from .genres import GenreGraph
 from .models import Artist, Edge, History, Taste, Track, is_mbid
 from .providers import (
     ArtistResolver,
@@ -49,6 +51,7 @@ class Params:
     popularity: float | None = None  # None = derived from explore
     unheard: str | None = None  # None | "tracks" (drop played tracks) | "artists" (also drop known artists)
     mix: dict[str, float] = field(default_factory=dict)  # stream -> 0..1 share of what it offers (missing = 1)
+    stops: int = 5  # flow mode: genre stops along the path
     adv: Advanced = field(default_factory=Advanced)
 
     @property
@@ -152,6 +155,8 @@ class Providers:
     feedback: list[FeedbackProvider] = field(default_factory=list)  # priority order
     track_similarity: TrackSimilarity | None = None
     genres: list[GenreSource] = field(default_factory=list)
+    # flow mode: genre sources for the taste profile, by name (keys of advanced.flow_source_shares)
+    profile_taggers: dict[str, Tagger] = field(default_factory=dict)
 
 
 @dataclass
@@ -590,4 +595,104 @@ class Radio:
             "path": g.path(n), "via": sorted(n.via), "known_artist": bool(history.plays(n.artist)),
             "taste": {"artist": round(taste.artist(n.artist), 2), "track": taste.track(t),
                       "similar_boost": round(boost, 2)},
+        }
+
+    # ---------- flow mode ----------
+    def profile(self, graph: GenreGraph):
+        """The user's genre profile from their dated likes: (top artists, resolved artists, per-source artist
+        genres, {genre: share}, spread over the graph). Raises InvalidInput when there's nothing to go on."""
+        a = self.a
+        likes = [x for prov in self.p.feedback for x in self._safe(prov.liked, default=[])]
+        if not likes:
+            raise InvalidInput("flow needs likes: a Yandex playlist, Navidrome stars, LB loves or imported loves")
+        weights = flow_mod.artist_weights(((f.artist, at) for f, at in likes), a.flow_half_life_days)
+        top = sorted(weights, key=lambda k: (-weights[k], k))[: a.flow_profile_artists]
+        weights = {k: weights[k] for k in top}
+        resolved = dict(zip(top, self._map(self.p.resolver.find_artist, top), strict=True))
+        sources = []
+        for name, tagger in self.p.profile_taggers.items():
+            share = a.flow_source_shares.get(name, 0.0)
+            if share <= 0:
+                continue
+            arts = [resolved.get(x) or Artist(x) for x in top]
+            tags = self._map(lambda ar, t=tagger: t.tags(ar, 5), arts)
+            got = {x: g for x, g in zip(top, tags, strict=True) if g}
+            self.log(f"profile: {name} genres for {len(got)} of {len(top)} artists")
+            sources.append((got, share))
+        profile = flow_mod.taste_profile(weights, sources)
+        if not profile:
+            raise InvalidInput("flow: no genres found for the liked artists")
+        self.log("profile: " + ", ".join(f"{g} {s:.2f}" for g, s in list(profile.items())[:8]))
+        spread = graph.spread(profile, a.genre_spread_hops, a.genre_spread_decay)
+        return top, resolved, sources, profile, spread
+
+    def flow(self, p: Params, graph: GenreGraph) -> dict:
+        """A playlist with no seed: the user's taste profile (from their likes) spread over the genre graph, a
+        path of p.stops genre stops (explore decides how far it leaves their genres), each stop filled with
+        familiar and new artists' tracks, scored like generate() (popularity fit, taste, jitter)."""
+        a, rng = self.a, random.Random(p.seed)
+        cfg = flow_mod.PlannerConfig(destination_from=a.flow_destination_from,
+                                     destination_width=a.flow_destination_width,
+                                     destination_reach=a.flow_destination_reach)
+        history, taste = self.history(), self.taste()
+        top, resolved, sources, profile, spread = self.profile(graph)
+        roots = {g: n.roots for g, n in graph.nodes.items()}
+        path = flow_mod.plan_path(spread, graph.adj, p.explore, p.stops, random.Random(rng.random()), roots, cfg)
+        self.log("path: " + " -> ".join(path))
+        counts = flow_mod.allocate(p.n, len(path))
+
+        # familiar artists per stop: liked artists whose genres include the stop, most-liked first
+        artist_genres: dict[str, list[str]] = {}
+        for genres_of, _ in sources:
+            for x, gs in genres_of.items():
+                artist_genres.setdefault(x, [])
+                artist_genres[x] += [g for g in gs if g not in artist_genres[x]]
+        pools_artists: dict[str, list[tuple[Artist, list[str], bool]]] = {}
+        for g, k in zip(path, counts, strict=True):
+            # about 3 candidates per wanted track of each kind keeps catalogue fetches proportional to n
+            new_k = round(k * p.explore)
+            fam_cap = min(a.flow_familiar_artists, 3 * max(1, k - new_k))
+            new_cap = min(a.flow_new_artists, 3 * max(1, new_k))
+            fam = [(resolved.get(x) or Artist(x), artist_genres.get(x, []), True) for x in top
+                   if g in artist_genres.get(x, [])][:fam_cap]
+            new: dict[str, tuple[Artist, list[str], bool]] = {}
+            for prov in self.p.genres:
+                if self._safe(prov.unsupported, [g]):
+                    continue
+                for ar in self._safe(prov.genre_artists, [g], "or", p.pop, new_cap * 2):
+                    known = history.plays(ar) or taste.artist(ar) > 0
+                    new.setdefault(ar.key, (ar, [g], bool(known)))
+            fam_keys = {f[0].key for f in fam}
+            pools_artists[g] = fam + [v for v in new.values() if v[0].key not in fam_keys][:new_cap]
+
+        everyone = {ar.key: ar for arts in pools_artists.values() for ar, _, _ in arts}
+        catalogues = dict(zip(everyone, self._map(self._top_tracks, list(everyone.values())), strict=True))
+        pools: dict[str, list[flow_mod.Pick]] = {}
+        for g, arts in pools_artists.items():
+            picks = []
+            for ar, gs, familiar in arts:
+                scored = []
+                for t in catalogues.get(ar.key) or []:
+                    if history.heard(t) or taste.track(t):  # liked tracks don't come back; hated ones never
+                        continue
+                    s = pop_fit(t.popularity, p) * artist_pop_fit(t.artist.popularity or ar.popularity, p)
+                    s *= self.taste_factor(taste.artist(ar)) * self.taste_factor(taste.track(t))
+                    s *= 1 - a.jitter / 2 + a.jitter * rng.random()
+                    scored.append(flow_mod.Pick(t, gs or [g], familiar, s))
+                picks += sorted(scored, key=lambda c: -c.score)[: a.flow_tracks_per_artist]
+            pools[g] = picks
+        stops = flow_mod.fill(path, pools, counts, p.explore, p.per_artist)
+        tracks = flow_mod.order(stops, path, a.flow_artist_gap)
+        self.log(f"flow: {len(tracks)} tracks over {len(path)} stops")
+        return {
+            "path": path, "explore": p.explore, "popularity": p.popularity, "stops": p.stops,
+            "profile": [{"genre": g, "share": s} for g, s in list(profile.items())[:20]],
+            "familiarity": flow_mod.familiarity(path, spread),
+            "flow_score": flow_mod.flow_score(tracks, graph.adj),
+            "graph_learned": graph.learned,
+            "candidates": sum(len(v) for v in pools.values()),
+            "tracks": [{"artist": c.artist, "title": c.title, "stop": c.stop, "genres": c.genres[:3],
+                        "familiar": c.familiar, "score": round(c.score, 4),
+                        "popularity": round(c.track.popularity, 2), "sources": sorted(c.track.sources),
+                        "recording_mbid": c.track.recording_mbid, "deezer_id": c.track.deezer_id} for c in tracks],
         }

@@ -95,6 +95,23 @@ def parser() -> argparse.ArgumentParser:
     r.add_argument("--navidrome-url", help="read stars/ratings from this Navidrome (creds from env)")
     r.add_argument("--save", nargs="?", const="", metavar="NAME", help="save the result (default name if omitted)")
 
+    def taste_flags(x):
+        x.add_argument("--yandex", metavar="URL", help="public Yandex Music playlist (e.g. your likes) as taste")
+        x.add_argument("--yandex-tracks", type=int, metavar="N", help="only the newest N playlist tracks")
+        x.add_argument("--navidrome-url", help="read stars/ratings from this Navidrome (creds from env)")
+
+    fl = sub.add_parser("flow", help="a playlist from your likes, flowing through genres (no seed)")
+    fl.add_argument("-e", "--explore", type=_unit, help="0 = tour your own genres, 1 = head far outside them")
+    fl.add_argument("-p", "--popularity", type=_unit, help="0 = deep cuts/small artists, 1 = hits")
+    fl.add_argument("-n", type=int)
+    fl.add_argument("--per-artist", type=int)
+    fl.add_argument("--stops", type=int, default=5, help="genre stops along the path (5)")
+    fl.add_argument("--rng-seed", type=int)
+    fl.add_argument("--save", nargs="?", const="", metavar="NAME")
+    taste_flags(fl)
+    pf = sub.add_parser("profile", help="your genre profile (what flow starts from) and nearby genres")
+    taste_flags(pf)
+
     d = sub.add_parser("deep-cuts", help="LB Weekly Exploration (or Jams), both weeks")
     d.add_argument("--user", help="LB user (default: config / $LISTENBRAINZ_USERNAME)")
     d.add_argument("--kind", choices=["exploration", "jams"], default="exploration")
@@ -139,7 +156,9 @@ def main(argv=None):
     token = "" if a.no_token else None  # "" disables, None = env
 
     history = None
-    if a.cmd == "radio":
+    if a.cmd in ("flow", "profile"):
+        a.no_history = a.history_file = a.lb_user = a.no_feedback = None
+    if a.cmd in ("radio", "flow", "profile"):
         if a.no_history:
             history = NoHistory()
         elif a.history_file:
@@ -185,6 +204,31 @@ def main(argv=None):
         else:
             out = rec.data_status()
         print(json.dumps(out, indent=2, ensure_ascii=False))
+        return
+    if a.cmd == "profile":
+        out = rec.profile()
+        if a.json:
+            print(json.dumps(out, indent=2, ensure_ascii=False))
+        else:
+            print("your genres:")
+            for x in out["profile"][:20]:
+                print(f"  {x['share']:.3f}  {x['genre']}")
+            print("nearby:")
+            for x in out["nearby"]:
+                print(f"  {x['score']:.3f}  {x['genre']}  (hop {x['hop']})")
+        return
+    if a.cmd == "flow":
+        res = rec.flow(explore=a.explore, popularity=a.popularity, n=a.n, per_artist=a.per_artist,
+                       stops=a.stops, rng_seed=a.rng_seed)
+        if a.json:
+            print(json.dumps(res, indent=2, ensure_ascii=False))
+        else:
+            log(f"path: {' -> '.join(res['path'])} (familiarity {res['familiarity']}, flow {res['flow_score']})")
+            for i, t in enumerate(res["tracks"], 1):
+                mark = "*" if t["familiar"] else " "
+                print(f"{i:>3} [{t['stop']}] p{t['popularity']:.2f}{mark} {t['artist']} — {t['title']}")
+        if a.save is not None:
+            log(f"saved: {rec.save(res['result_id'], a.save or None)}")
         return
     if a.cmd == "saved":
         out = rec.load_saved(a.name) if a.name else rec.list_saved()

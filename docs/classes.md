@@ -108,6 +108,7 @@ classDiagram
     class FeedbackProvider {
         <<interface>>
         load()
+        liked()
         version()
     }
 ```
@@ -133,6 +134,7 @@ classDiagram
 | `providers/musicbrainz.py` | `MusicBrainz` (store first, API fallback; `genre_names()` for the data build) |
 | `providers/musicbrainz_store.py` | `ArtistStore` (read side of `mb_artists.sqlite`), `GenreIndex` (`genre_artists.json`), `import_dump()` (builds the store from the JSON dump) |
 | `providers/listenbrainz.py` (data build) | `LBData` (sitewide top artists, artist genres in batches of 50; no interface) |
+| `flow.py` (not a provider) | `Pick`, `PlannerConfig`; pure `artist_weights`, `taste_profile`, `plan_path`, `destination`, `route_between`, `fill`, `order`, `flow_score`, `familiarity` |
 | `data.py` (not a provider) | `build`, `fetch`, `status`, `package`; `BuildOptions` |
 | `providers/yandex.py` | `YandexClient` (public playlist with paging, similar artists; `.ru` then `.net`), `YandexLikes`, `YandexSimilar`; `genre_table()` reads `postradio/data/yandex_genres.json` |
 | `providers/wikidata.py` | `Wikidata` (genre graph via SPARQL; data build only, no interface) |
@@ -193,6 +195,8 @@ classDiagram
     }
     class Recommender {
         generate()
+        flow()
+        profile()
         deep_cuts()
         import_feedback()
         genre_graph()

@@ -157,6 +157,11 @@ class YandexLikes(FeedbackProvider, Tagger):
     def load(self) -> list[Feedback]:
         return [Feedback(t.artist, t.title, 1.0, self.name) for t in self.playlist.tracks]
 
+    def liked(self) -> list[tuple[Feedback, int | None]]:
+        """Every liked track, credited to each of its artists, dated when it was added."""
+        return [(Feedback(name, t.title, 1.0, self.name), t.added_at) for t in self.playlist.tracks
+                for name, _ in t.artists]
+
     def history(self) -> History:
         return History.from_plays(Play(t.artist, t.title, t.added_at) for t in self.playlist.tracks)
 

@@ -105,7 +105,9 @@ class Advanced:
     radio_neighbours: int = 3  # radio is pulled for the seed + this many hop-1 artists
     top_tracks_limit: int = 100
     junk_title_pattern: str = (r"^\[|\b(live|demo|remix|edit|instrumental|acoustic version|karaoke|session"
-                               r"|rehearsal|bootleg|version|take \d+|dub|mix|unplugged|débranché|phase corrected)\b"
+                               r"|rehearsal|bootleg|version|take \d+|dub|mix|unplugged|débranché|phase corrected"
+                               r"|tribute|originally performed|in the style of|re-recording|re-recorded"
+                               r"|from the (series|film|movie|motion picture|game))\b"
                                r"|\(\d{4}|\d{4}[‐-]\d\d")
     # ranking
     familiarity_strength: float = 0.9  # known artist weight *= 1 - strength * explore * familiarity
@@ -141,6 +143,19 @@ class Advanced:
     genre_fallback_scale: float = 0.2  # with learned weights, structural edges fill uncovered genres at this scale
     genre_spread_hops: int = 2  # a taste profile spreads this many hops over the genre graph...
     genre_spread_decay: float = 0.5  # ...losing this factor per hop (times the edge weight)
+    # flow mode (postradio/flow.py)
+    flow_half_life_days: float = 180.0  # taste profile: a like this old counts half as much as the newest
+    flow_profile_artists: int = 150  # artists whose genres are looked up for the profile (most-liked first)
+    flow_source_shares: dict[str, float] = field(default_factory=lambda: {
+        "mb": 0.7,  # MusicBrainz artist genres (store first, then the API)
+        "yandex": 0.3})  # Yandex album genres of the liked tracks
+    flow_destination_from: float = 0.3  # below this explore, the path only tours the user's own genres
+    flow_destination_width: float = 0.2  # how closely the destination must match the closeness explore asks for
+    flow_destination_reach: float = 0.6  # wanted closeness of the destination = 1 - reach * explore
+    flow_new_artists: int = 30  # new-artist candidates fetched per stop (per genre source)
+    flow_familiar_artists: int = 12  # liked artists considered per stop
+    flow_tracks_per_artist: int = 5  # an artist's best-fitting tracks kept as candidates
+    flow_artist_gap: int = 4  # the same artist is kept at least this many tracks apart where possible
     # rate limits (per host; "default" covers the rest)
     min_interval_s: dict[str, float] = field(default_factory=lambda: {
         "musicbrainz.org": 1.1,  # hard limit 1 req/s

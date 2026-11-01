@@ -164,7 +164,8 @@ class Recommender:
         tracks = [dz] + ([lb_top] if lb_top else [])  # LB's popularity endpoint is the only one needing a token
         tags = TroiTagRadio(http, token, a.troi_window_width, a.genre_recordings_per_artist)
         similar = [LBSimilar(http), dz, mb] + ([YandexSimilar(http, self.yandex)] if self.yandex else [])
-        return Providers(resolver=mb, similar=similar, tracks=tracks,
+        taggers = {"mb": mb, **({"yandex": self.yandex} if self.yandex else {})}
+        return Providers(resolver=mb, similar=similar, tracks=tracks, profile_taggers=taggers,
                          radios=[dz, TroiRadio(http, token, a.troi_window_width)], tagger=mb, tag_radio=tags,
                          history=self.history, feedback=self.feedback, track_similarity=LBSimilarRecordings(http),
                          genres=[tags, dz] + ([mb] if self.store or self.genre_index else []))
@@ -193,6 +194,32 @@ class Recommender:
         res = self.radio.generate(p, artist=artist, track=track, artist_mbid=artist_mbid,
                                   recording_mbid=recording_mbid, genres=genres, genre_op=genre_op)
         return self._remember("radio", res, default_name=self._radio_name(res))
+
+    def flow(self, *, explore: float | None = None, popularity: float | None = None, n: int | None = None,
+             per_artist: int | None = None, stops: int = 5, rng_seed: int | None = None) -> dict:
+        """A playlist from the user's own likes, no seed: a path of genre stops through the genre graph (explore =
+        how far from their genres), filled with familiar and new artists. Needs likes (Yandex playlist,
+        Navidrome stars, LB loves or imported loves)."""
+        d = self.cfg.defaults
+        p = Params(explore=d.explore if explore is None else explore, n=d.n if n is None else n,
+                   per_artist=d.per_artist if per_artist is None else per_artist, seed=rng_seed,
+                   popularity=popularity if popularity is not None else d.popularity, stops=stops,
+                   adv=self.cfg.advanced)
+        if p.n < 1 or p.per_artist < 1 or not 1 <= p.stops <= 20:
+            raise InvalidInput("n and per_artist must be at least 1, stops 1..20")
+        for name, v in (("explore", p.explore), ("popularity", p.popularity)):
+            if v is not None and not 0 <= v <= 1:
+                raise InvalidInput(f"{name} must be in [0, 1]")
+        res = self.radio.flow(p, self.genre_graph())
+        pop = "auto" if p.popularity is None else f"{p.popularity:.2f}"
+        name = f"{datetime.now(UTC):%Y-%m-%d}_flow_e{p.explore:.2f}_p{pop}"
+        return self._remember("flow", res, default_name=name)
+
+    def profile(self) -> dict:
+        """The taste profile flow mode would use: the user's genres and their nearest neighbours."""
+        _, _, _, profile, spread = self.radio.profile(self.genre_graph())
+        return {"profile": [{"genre": g, "share": s} for g, s in profile.items()],
+                "nearby": [{"genre": s.genre, "score": s.score, "hop": s.hop} for s in spread if s.hop > 0][:20]}
 
     def _mix(self, overrides: dict[str, float] | None) -> dict[str, float]:
         """advanced.mix stream caps with per-run overrides. Keys: deezer-top, lb, deezer-radio, troi,

@@ -9,6 +9,8 @@ of a traceback.
 | Command | Flags (default) |
 |---|---|
 | `radio` | **Seed, exactly one:** `--artist` · `--track "Artist - Title"` · `--artist-mbid` · `--recording-mbid` · `--genre "a,b"`<br>**Seed options:** `--genre-op or\|and` (or) · `--unheard none\|tracks\|artists` (config; `none` overrides it)<br>**Shape:** `-e/--explore` 0–1 (0.5) · `-p/--popularity` 0–1 (unset = follows explore) · `--auto-popularity` · `-n` (50) · `--per-artist` (2) · `--rng-seed`<br>**History, at most one:** `--lb-user U` · `--history-file F.jsonl\|csv` · `--no-history`<br>**Yandex:** `--yandex URL` (playlist as history + taste) · `--yandex-tracks N`<br>**Taste:** `--no-feedback` · `--navidrome-url URL`<br>**Streams:** `--mix "deezer-top=0.2,troi=1"`<br>**Save:** `--save [NAME]` |
+| `flow` | `-e/--explore` 0–1 · `-p/--popularity` · `-n` · `--per-artist` · `--stops` (5) · `--rng-seed` · `--save [NAME]`<br>**Taste:** `--yandex URL` · `--yandex-tracks N` · `--navidrome-url`. No seed: the playlist comes from your likes. |
+| `profile` | Same taste flags. Prints your genre profile and the nearest genres flow can head to. |
 | `deep-cuts` | `--user` (config / `$LISTENBRAINZ_USERNAME`) · `--kind exploration\|jams` (exploration) · `--save [NAME]` |
 | `feedback import FILE\|-` | Append a dated loves/hates batch |
 | `feedback batches` | List imported batches with dates |
@@ -27,6 +29,8 @@ doesn't override variables already set.
 | Endpoint | Does |
 |---|---|
 | `POST /radio` | Body: exactly one of `artist`, `track`, `artist_mbid`, `recording_mbid`, `genres`. Optional: `genre_op`, `unheard`, `explore`, `popularity`, `n` (1–500), `per_artist`, `rng_seed`, `auto_popularity`, `mix` (`{stream: 0..1}`). Returns **422** for invalid input (seed count, malformed MBID or track string, out-of-range values, unknown mix stream) and **404** when the seed doesn't exist. |
+| `POST /flow` | Body: `explore`, `popularity`, `n` (1–500), `per_artist`, `stops` (1–20), `rng_seed`. Uses the configured likes. **422** without likes. |
+| `GET /profile` | The genre profile flow starts from, plus nearby genres |
 | `GET /deep-cuts?user=&kind=exploration\|jams` | LB Weekly Exploration or Jams, one entry per week |
 | `GET /results/{id}` | An unsaved result from memory; 404 once expired |
 | `POST /results/{id}/save` | `{name, overwrite}`; 409 if the file exists |
@@ -48,6 +52,8 @@ with Recommender() as rec:                      # reads config.yaml / $POSTRADIO
 
 `Recommender(cfg, token=, lb_user=, history=, feedback=, offline=, log=)`. Pass `history=` or `feedback=`
 to plug in any `HistoryProvider` or `FeedbackProvider`, such as a Maloja or multi-scrobbler adapter.
+`flow(explore=, popularity=, n=, per_artist=, stops=, rng_seed=)` and `profile()` run flow mode from the
+configured likes.
 `data_build(out_dir, skip, keep_dump, seeds, similar)`, `data_fetch(tag, store)` and `data_status()`
 manage the optional files in `storage.data_dir`. `genre_graph()` returns the loaded `GenreGraph`.
 `with_config(...)` returns a modified copy; use it in a `with` block so its worker threads are released.
@@ -80,6 +86,7 @@ that name the key.
 | Taste | `love_factor` 1.5 · `hate_factor` 0.3 · `feedback_track_cap` 50 · `similar_recordings_limit` 50 · `seed_track_similar_limit` 50 · `seed_track_boost` 1.0 · `seed_track_affinity` 0.8 · `feedback_max_age_s` 900 · `history_refresh_s` 86400 · `feedback_store_depth` 5000 |
 | Provider scales | `deezer_fans_full_scale` 6.9 · `deezer_rank_full_scale` 900000 · `lb_listeners_full_scale` 5.5 · `lb_min_listener_share` 0.002 · `troi_window_width` 34 |
 | Genre graph | `genre_kind_weights` (subgenre_of 1.0, influenced_by 0.5, yandex_parent 0.3) · `genre_fallback_scale` 0.2 · `genre_spread_hops` 2 · `genre_spread_decay` 0.5 |
+| Flow mode | `flow_half_life_days` 180 · `flow_profile_artists` 150 · `flow_source_shares` (mb 0.7, yandex 0.3) · `flow_destination_from` 0.3 · `flow_destination_width` 0.2 · `flow_destination_reach` 0.6 · `flow_new_artists` 30 · `flow_familiar_artists` 12 · `flow_tracks_per_artist` 5 · `flow_artist_gap` 4 |
 | Rate limits & concurrency | `min_interval_s` (MusicBrainz 1.1, Wikidata 1.0, Deezer 0.12, LB 0.34, LB labs 0.1, other 0.05) · `max_in_flight` (MusicBrainz 1, Wikidata 1, Deezer 6, LB 4, LB labs 4, other 4) · `ratelimit_floor` 2 · `max_attempts` (MusicBrainz 5, other 4) · `backoff_cap_s` 30 · `fetch_workers` 8 · `http_cache_keep_s` 2592000 (30 days) |
 
 ## Loves/hates import format

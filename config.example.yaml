@@ -87,7 +87,8 @@ advanced:
   candidate_artists_min: 18
   radio_neighbours: 3
   top_tracks_limit: 100
-  junk_title_pattern: ^\[|\b(live|demo|remix|edit|instrumental|acoustic version|karaoke|session|rehearsal|bootleg|version|take \d+|dub|mix|unplugged|débranché|phase corrected)\b|\(\d{4}|\d{4}[‐-]\d\d
+  junk_title_pattern: ^\[|\b(live|demo|remix|edit|instrumental|acoustic version|karaoke|session|rehearsal|bootleg|version|take \d+|dub|mix|unplugged|débranché|phase corrected|tribute|originally performed|in
+    the style of|re-recording|re-recorded|from the (series|film|movie|motion picture|game))\b|\(\d{4}|\d{4}[‐-]\d\d
   familiarity_strength: 0.9
   familiarity_saturation: 200
   heard_skip_explore: 0.3
@@ -118,6 +119,18 @@ advanced:
   genre_fallback_scale: 0.2
   genre_spread_hops: 2
   genre_spread_decay: 0.5
+  flow_half_life_days: 180.0
+  flow_profile_artists: 150
+  flow_source_shares:
+    mb: 0.7
+    yandex: 0.3
+  flow_destination_from: 0.3
+  flow_destination_width: 0.2
+  flow_destination_reach: 0.6
+  flow_new_artists: 30
+  flow_familiar_artists: 12
+  flow_tracks_per_artist: 5
+  flow_artist_gap: 4
   min_interval_s:
     musicbrainz.org: 1.1
     query.wikidata.org: 1.0

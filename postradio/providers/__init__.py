@@ -127,6 +127,11 @@ class FeedbackProvider(ABC):
     @abstractmethod
     def load(self) -> list[Feedback]: ...
 
+    def liked(self) -> list[tuple[Feedback, int | None]]:
+        """Positive opinions with when they were given (unix seconds, None if unknown). Flow mode builds the
+        taste profile from these, newest weighted most. Sources that know dates override this."""
+        return [(f, None) for f in self.load() if f.score > 0]
+
     def version(self) -> object:
         """Changes whenever load() may return something different; consumers reload on change.
         None = never changes (e.g. a static list)."""

@@ -46,6 +46,32 @@ Checked on real services:
   CLI `radio --yandex URL`.
 - The cloud session gets 451 on playlist endpoints (`/genres` answers 200), so it is tested with fakes only.
 
+## Phase 4: flow mode (done; tested here with imported loves, not yet with the Yandex playlist)
+
+- `postradio/flow.py` (pure planner, ported), `Radio.flow` / `Radio.profile` in the engine,
+  `Recommender.flow` / `profile`, CLI `flow` / `profile`, `POST /flow`, `GET /profile`.
+  `FeedbackProvider.liked()` gives dated likes (Yandex: when each track was added).
+- Live run in the cloud: 16 loved tracks over 15 artists, with the store, real Deezer/LB/MusicBrainz, `-p 0.5`,
+  12 tracks, 4 stops, `--rng-seed 3`:
+  - explore 0: hip hop → contemporary r&b → experimental hip hop → electronic. All tracks are by familiar
+    artists, and no liked songs come back.
+  - explore 0.5: hip hop → afro house → gangsta rap → hardcore hip hop. Mostly new artists.
+  - explore 1: hip hop → dancehall → electropop → dance-pop. All new.
+  - Runs take 40–110 s cold, depending on how many new artists need a Deezer lookup.
+- Deviations from the webpage planner:
+  1. Destination closeness is now relative to the closest eligible genre. With a broad profile every
+     outside genre scored ≤ 0.41 against the top genre, so explore 0.5 and 1 picked the same destination.
+  2. The artist-gap swap stays within a stop, because it used to pull tracks across stops and break the path.
+  3. A stop that comes up short hands its remainder to the other stops.
+  4. Liked tracks are dropped whatever the source (the webpage relied on Yandex history).
+  5. The junk filter (also used by radio) gained: tribute, originally performed, in the style of,
+     re-recording, from the series/film/movie/game.
+- Not ported (Post-Radio already covers these): the webpage's own Deezer client and cache; the Gumbel
+  temperature and position weight, replaced by `pop_fit`, jitter and `--rng-seed`; `title_key` remains
+  only for song de-duplication in `fill`.
+- Open: popularity "match me" (default = the user's own median), regionality, the three taste time
+  scales, tempo ordering, and moving the explorer page here.
+
 ## Development notes
 
 - Setup, always in a venv:
