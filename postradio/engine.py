@@ -490,7 +490,8 @@ class Radio:
         return sorted(entries, key=lambda e: abs(e[0].popularity - p.pop))[:cap]
 
     # ---------- ranking ----------
-    def generate(self, p: Params, **seed_args) -> dict:
+    def generate(self, p: Params, dry: bool = False, **seed_args) -> dict:
+        """dry=True: resolve the seed and build the artist graph only (no catalogues, no track picks)."""
         rng = random.Random(p.seed)
         run = Run(genres=list(seed_args.get("genres") or []), genre_op=seed_args.get("genre_op") or "or")
         seed_artist, seed_track = self.resolve(**seed_args)
@@ -499,6 +500,10 @@ class Radio:
         def personal():  # history + taste don't affect graph building, so they load alongside it
             taste = self.taste()
             return self.history(), taste, self._safe(self._track_layer, taste, default={}) if taste else {}
+
+        if dry:
+            g = self.build_graph(seed_artist, p, run)
+            return self._preview(g, seed_artist, seed_track, p, run)
 
         with ThreadPoolExecutor(max_workers=1) as bg:
             pending = bg.submit(personal)
@@ -561,6 +566,26 @@ class Radio:
             "graph_size": len(g.nodes),
             "candidates": len(merged),
             "tracks": [self._row(s, t, n, g, history, taste, run.boost(t)) for b in bands for (s, t, n) in b],
+        }
+
+    def _preview(self, g: Graph, seed_artist: Artist, seed_track: Track | None, p: Params, run: Run,
+                 per_hop: int = 12) -> dict:
+        """Dry radio: the artist graph by hop, strongest first, with how each artist was reached."""
+        by_hop: dict[int, list[Node]] = defaultdict(list)
+        for n in g.nodes.values():
+            if n.hop > 0:
+                by_hop[n.hop].append(n)
+        return {
+            "dry": True, "rng_seed": p.seed,
+            "seed": {"artist": None if seed_artist.virtual else seed_artist.name, "artist_mbid": seed_artist.mbid,
+                     "track": seed_track.title if seed_track else None},
+            "genres": run.genres or None, "explore": p.explore, "popularity": p.popularity, "mode": p.radio_mode,
+            "max_hops": p.max_hops, "target_hop": round(p.target_hop, 2), "popularity_target": round(p.pop, 2),
+            "graph_size": len(g.nodes),
+            "hops": {h: {"artists": len(ns), "top": [{"artist": n.artist.name, "affinity": round(n.affinity, 3),
+                                                     "via": sorted(n.via), "path": g.path(n)}
+                                                    for n in sorted(ns, key=lambda n: -n.affinity)[:per_hop]]}
+                     for h, ns in sorted(by_hop.items())},
         }
 
     def _select(self, scored, p: Params):
@@ -632,7 +657,7 @@ class Radio:
         spread = graph.spread(profile, a.genre_spread_hops, a.genre_spread_decay)
         return top, resolved, sources, profile, spread
 
-    def flow(self, p: Params, graph: GenreGraph) -> dict:
+    def flow(self, p: Params, graph: GenreGraph, dry: bool = False) -> dict:
         """A playlist with no seed: the user's taste profile (from their likes) spread over the genre graph, a
         path of p.stops genre stops (explore decides how far it leaves their genres), each stop filled with
         familiar and new artists' tracks, scored like generate() (popularity fit, taste, jitter)."""
@@ -646,6 +671,12 @@ class Radio:
         path = flow_mod.plan_path(spread, graph.adj, p.explore, p.stops, random.Random(rng.random()), roots, cfg)
         self.log("path: " + " -> ".join(path))
         counts = flow_mod.allocate(p.n, len(path))
+        if dry:  # preview: profile and path only, no artist pools or catalogues
+            return {"dry": True, "rng_seed": p.seed, "path": path, "explore": p.explore, "popularity": p.popularity,
+                    "stops": p.stops, "tracks_per_stop": counts, "familiarity": flow_mod.familiarity(path, spread),
+                    "graph_learned": graph.learned,
+                    "profile": [{"genre": g, "share": s} for g, s in list(profile.items())[:20]],
+                    "nearby": [{"genre": s.genre, "score": s.score, "hop": s.hop} for s in spread if s.hop > 0][:20]}
 
         # familiar artists per stop: liked artists whose genres include the stop, most-liked first
         artist_genres: dict[str, list[str]] = {}

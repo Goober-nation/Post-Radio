@@ -172,6 +172,23 @@ def test_package_then_fetch_installs_verified_files(tmp_path):
     assert not (genres_only / STORE_FILE).exists() and (genres_only / INDEX_FILE).exists()
 
 
+def test_dry_fetch_downloads_only_the_manifest_and_says_what_would_change(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "genre_weights.json").write_text('{"cotag": {}, "similar": {}}')
+    out = data.package(tmp_path / "src", tmp_path / "dist", "D1", log=lambda _m: None)
+    http, _ = release_from(out, out.name)
+    dest = tmp_path / "installed"
+    dest.mkdir()
+    shutil.copy(out / "genre_graph.json", dest / "genre_graph.json")  # already up to date
+    (dest / "genre_weights.json").write_text("{}")  # an older version
+    got = data.check(http, dest)
+    states = {f["file"]: f["state"] for f in got["files"]}
+    assert states == {"genre_graph.json": "same", "genre_weights.json": "changed"}  # what fetch would install
+    assert got["has_store"] is False and got["download_bytes"] > 0
+    assert [u.rsplit("/", 1)[1] for u in http.downloads] == ["manifest.json"]  # nothing else pulled
+    assert (dest / "genre_weights.json").read_text() == "{}"  # nothing installed
+
+
 def test_fetch_installs_nothing_on_checksum_mismatch(tmp_path):
     (tmp_path / "empty").mkdir()
     out = data.package(tmp_path / "empty", tmp_path / "dist", "D1", log=lambda _m: None)

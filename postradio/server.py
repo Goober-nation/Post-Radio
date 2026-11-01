@@ -25,6 +25,7 @@ class RadioRequest(BaseModel):
     rng_seed: int | None = None
     auto_popularity: bool = False  # ignore configured default popularity; follow explore
     mix: dict[str, float] | None = None  # per-run stream multipliers 0..1, e.g. {"deezer-top": 0.2}
+    dry: bool = False  # preview the artist graph only; nothing is stored
 
 
 class FlowRequest(BaseModel):
@@ -35,6 +36,7 @@ class FlowRequest(BaseModel):
     per_artist: int | None = Field(None, ge=1)
     stops: int = Field(5, ge=1, le=20)
     rng_seed: int | None = None
+    dry: bool = False  # preview the profile and genre path only; nothing is stored
 
 
 class ArtistRef(BaseModel):

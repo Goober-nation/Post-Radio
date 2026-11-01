@@ -267,6 +267,42 @@ def fetch(http: Http, data_dir: Path, tag: str | None = None, store: bool = True
     return installed
 
 
+def check(http: Http, data_dir: Path, tag: str | None = None, repo: str = DATA_RELEASE_REPO) -> dict:
+    """A dry fetch: what the newest (or `tag`) release holds and what fetching it would change, downloading
+    only its manifest. Per file: `same` (the installed copy has the release's checksum), `changed`, `new`
+    (not installed), or `missing from release` (the manifest lists it, the release lacks the asset). The store
+    is compared by size and installed tag instead of hashing ~600 MB."""
+    rel = release(http, tag, repo)
+    assets = {a["name"]: a for a in rel.get("assets") or [] if isinstance(a, dict) and a.get("name")}
+    if "manifest.json" not in assets:
+        raise FileNotFoundError(f"{rel['tag_name']}: no manifest.json")
+    installed = json.loads((data_dir / INSTALLED).read_text()) if (data_dir / INSTALLED).is_file() else {}
+    with tempfile.TemporaryDirectory() as tmp:
+        m = Path(tmp) / "manifest.json"
+        http.download(assets["manifest.json"]["browser_download_url"], m, resume=False)
+        manifest = json.loads(m.read_text())
+    files, download = [], 0
+    for name, meta in sorted((manifest.get("files") or {}).items()):
+        if not (name.endswith(".json") or name == STORE_FILE + ".xz"):
+            continue  # fetch installs only these (the licence text stays in the release)
+        local = data_dir / name.removesuffix(".xz")
+        if name not in assets:
+            state = "missing from release"
+        elif not local.is_file():
+            state = "new"
+        elif name.endswith(".xz"):
+            state = "same" if installed.get("tag") == rel["tag_name"] else "changed?"
+        else:
+            state = "same" if sha256(local) == meta.get("sha256") else "changed"
+        if state in ("new", "changed", "changed?"):
+            download += int(meta.get("bytes") or 0)
+        files.append({"file": name, "bytes": meta.get("bytes"), "licence": meta.get("licence"), "state": state})
+    return {"tag": rel["tag_name"], "musicbrainz_dump": manifest.get("musicbrainz_dump"),
+            "built": manifest.get("built"), "installed": installed.get("tag"), "data_dir": str(data_dir),
+            "has_store": STORE_FILE + ".xz" in manifest.get("files", {}), "files": files,
+            "download_bytes": download}
+
+
 def status(data_dir: Path) -> dict:
     """What's in data_dir: each optional file (size or absent), the installed release, the last build."""
     def size(name: str) -> int | None:

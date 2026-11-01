@@ -9,6 +9,7 @@ Results live in an in-process TTL cache until saved; nothing touches disk unless
 """
 import json
 import os
+import random
 import re
 import threading
 import time
@@ -64,6 +65,11 @@ class ResultCache:
                 del self._d[key]
                 return None
             return item[1]
+
+
+def new_seed() -> int:
+    """A run seed small enough to type back in (--rng-seed)."""
+    return random.randrange(1_000_000)
 
 
 def slug(s: str) -> str:
@@ -177,9 +183,11 @@ class Recommender:
                  recording_mbid: str | None = None, genres: list[str] | None = None, genre_op: str = "or",
                  explore: float | None = None, popularity: float | None = None, n: int | None = None,
                  per_artist: int | None = None, rng_seed: int | None = None, auto_popularity: bool = False,
-                 unheard: str | None = None, mix: dict[str, float] | None = None) -> dict:
+                 unheard: str | None = None, mix: dict[str, float] | None = None, dry: bool = False) -> dict:
         """Unset knobs fall back to config defaults. auto_popularity=True ignores a configured default
-        popularity so it follows explore."""
+        popularity so it follows explore. Without rng_seed a seed is picked and reported (`rng_seed` in the
+        result), so any run can be repeated. dry=True previews the artist graph without picking tracks."""
+        rng_seed = new_seed() if rng_seed is None else rng_seed
         d = self.cfg.defaults
         pop = popularity if popularity is not None else (None if auto_popularity else d.popularity)
         p = Params(explore=d.explore if explore is None else explore, n=d.n if n is None else n,
@@ -193,15 +201,20 @@ class Recommender:
                 raise InvalidInput(f"{name} must be in [0, 1]")
         if sum(x is not None for x in (artist, track, artist_mbid, recording_mbid, genres or None)) != 1:
             raise InvalidInput("give exactly one seed: artist, track, artist_mbid, recording_mbid or genres")
-        res = self.radio.generate(p, artist=artist, track=track, artist_mbid=artist_mbid,
+        res = self.radio.generate(p, dry=dry, artist=artist, track=track, artist_mbid=artist_mbid,
                                   recording_mbid=recording_mbid, genres=genres, genre_op=genre_op)
+        if dry:
+            return res
+        res["rng_seed"] = rng_seed
         return self._remember("radio", res, default_name=self._radio_name(res))
 
     def flow(self, *, explore: float | None = None, popularity: float | None = None, n: int | None = None,
-             per_artist: int | None = None, stops: int = 5, rng_seed: int | None = None) -> dict:
+             per_artist: int | None = None, stops: int = 5, rng_seed: int | None = None, dry: bool = False) -> dict:
         """A playlist from the user's own likes, no seed: a path of genre stops through the genre graph (explore =
         how far from their genres), filled with familiar and new artists. Needs likes (Yandex playlist,
-        Navidrome stars, LB loves or imported loves)."""
+        Navidrome stars, LB loves or imported loves). Without rng_seed a seed is picked and reported, so the
+        same path/playlist can be had again; dry=True stops after the profile and the path (no tracks)."""
+        rng_seed = new_seed() if rng_seed is None else rng_seed
         d = self.cfg.defaults
         p = Params(explore=d.explore if explore is None else explore, n=d.n if n is None else n,
                    per_artist=d.per_artist if per_artist is None else per_artist, seed=rng_seed,
@@ -212,7 +225,10 @@ class Recommender:
         for name, v in (("explore", p.explore), ("popularity", p.popularity)):
             if v is not None and not 0 <= v <= 1:
                 raise InvalidInput(f"{name} must be in [0, 1]")
-        res = self.radio.flow(p, self.genre_graph())
+        res = self.radio.flow(p, self.genre_graph(), dry=dry)
+        if dry:
+            return res
+        res["rng_seed"] = rng_seed
         pop = "auto" if p.popularity is None else f"{p.popularity:.2f}"
         name = f"{datetime.now(UTC):%Y-%m-%d}_flow_e{p.explore:.2f}_p{pop}"
         return self._remember("flow", res, default_name=name)
@@ -353,6 +369,10 @@ class Recommender:
             self.store.close()  # the file is replaced; reopened on the next Recommender
             self.store = None
         return data_mod.fetch(self.http, self.data_dir, tag, store=store, log=self.log)
+
+    def data_check(self, tag: str | None = None) -> dict:
+        """What `data_fetch` would do, downloading only the release's manifest."""
+        return data_mod.check(self.http, self.data_dir, tag)
 
     def data_status(self) -> dict:
         return data_mod.status(self.data_dir)

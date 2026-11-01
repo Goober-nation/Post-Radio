@@ -205,3 +205,29 @@ def test_destination_distance_follows_explore_even_when_every_outside_genre_is_f
     cfg = PlannerConfig(destination_width=0.1)
     picks = {e: {destination("home", f, r, e, random.Random(s), roots, cfg) for s in range(20)} for e in (0.5, 1)}
     assert picks == {0.5: {"mid"}, 1: {"far"}}
+
+
+def test_flow_dry_previews_the_path_without_fetching_tracks():
+    likes = [(Feedback("Seed", "Seed song 0", 1.0, "likes"), 100)]
+    with radio(likes) as r:
+        fetched = []
+        r._top_tracks = lambda a: fetched.append(a) or []
+        dry = r.flow(Params(explore=0.5, n=8, seed=7, stops=3), graph(), dry=True)
+        assert dry["dry"] and dry["rng_seed"] == 7 and fetched == []
+        assert dry["tracks_per_stop"] == [3, 3, 2] and dry["profile"][0]["genre"] == "hip hop"
+        del r._top_tracks
+        full = r.flow(Params(explore=0.5, n=8, seed=7, stops=3), graph())
+        assert full["path"] == dry["path"]  # the preview is the path the real run takes
+
+
+def test_radio_dry_builds_the_graph_but_picks_no_tracks():
+    from fakes import Similar
+
+    r = Radio(Providers(resolver=Resolver(), similar=[Similar()], tracks=[Tracks()]), Advanced(), log=lambda *_: None)
+    fetched = []
+    r._top_tracks = lambda a: fetched.append(a) or []
+    res = r.generate(Params(explore=1, seed=5), dry=True, artist="Seed")
+    assert res["dry"] and "tracks" not in res and fetched == []
+    assert res["hops"][1]["top"][0]["artist"] == "Alpha" and res["hops"][1]["top"][0]["path"] == ["Seed", "Alpha"]
+    assert res["max_hops"] == 3 and res["graph_size"] == 4
+    r.close()

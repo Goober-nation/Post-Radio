@@ -78,6 +78,21 @@ Checked on real services:
 - Open: popularity "match me" (default = the user's own median), regionality, the three taste time
   scales, tempo ordering, and moving the explorer page here.
 
+## Dry runs and seeds (user request, 2026-11-01)
+
+- `radio --dry`: the seed and the artist graph by hop, no tracks. `flow --dry`: the profile and the genre
+  path, no tracks. `data fetch --dry` (`Recommender.data_check`): the release listing and its manifest only.
+- Every radio and flow run reports its seed, picking one when `--rng-seed` isn't given, so a preview can
+  be repeated for real.
+
+## Flow speed (measured)
+
+A cold `flow -e 0.5 -n 30 --stops 5` (16 loved tracks, store installed, no LB token) took 185 s. Profile
+and path took 0.1 s. Requests: 50 Deezer artist searches, 48 Deezer catalogues, and 84 MusicBrainz
+requests (40 recording + 44 release-group lists). The MusicBrainz ones dominate: Deezer's identity check
+fetches an artist's MB titles whenever a name search returns several same-named Deezer artists, and
+MusicBrainz allows 1 request/s. Repeat runs on the same artists are fast (7-day cache).
+
 ## Development notes
 
 - Setup, always in a venv:

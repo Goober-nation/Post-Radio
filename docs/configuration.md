@@ -8,15 +8,15 @@ of a traceback.
 
 | Command | Flags (default) |
 |---|---|
-| `radio` | **Seed, exactly one:** `--artist` · `--track "Artist - Title"` · `--artist-mbid` · `--recording-mbid` · `--genre "a,b"`<br>**Seed options:** `--genre-op or\|and` (or) · `--unheard none\|tracks\|artists` (config; `none` overrides it)<br>**Shape:** `-e/--explore` 0–1 (0.5) · `-p/--popularity` 0–1 (unset = follows explore) · `--auto-popularity` · `-n` (50) · `--per-artist` (2) · `--rng-seed`<br>**History, at most one:** `--lb-user U` · `--history-file F.jsonl\|csv` · `--no-history`<br>**Yandex:** `--yandex URL` (playlist as history + taste) · `--yandex-tracks N`<br>**Taste:** `--no-feedback` · `--navidrome-url URL`<br>**Streams:** `--mix "deezer-top=0.2,troi=1"`<br>**Save:** `--save [NAME]` |
-| `flow` | `-e/--explore` 0–1 · `-p/--popularity` · `-n` · `--per-artist` · `--stops` (5) · `--rng-seed` · `--save [NAME]`<br>**Taste:** `--yandex URL` · `--yandex-tracks N` · `--navidrome-url`. No seed: the playlist comes from your likes. |
+| `radio` | **Seed, exactly one:** `--artist` · `--track "Artist - Title"` · `--artist-mbid` · `--recording-mbid` · `--genre "a,b"`<br>**Seed options:** `--genre-op or\|and` (or) · `--unheard none\|tracks\|artists` (config; `none` overrides it)<br>**Shape:** `-e/--explore` 0–1 (0.5) · `-p/--popularity` 0–1 (unset = follows explore) · `--auto-popularity` · `-n` (50) · `--per-artist` (2) · `--rng-seed`<br>**History, at most one:** `--lb-user U` · `--history-file F.jsonl\|csv` · `--no-history`<br>**Yandex:** `--yandex URL` (playlist as history + taste) · `--yandex-tracks N`<br>**Taste:** `--no-feedback` · `--navidrome-url URL`<br>**Streams:** `--mix "deezer-top=0.2,troi=1"`<br>**Save:** `--save [NAME]`<br>**Preview:** `--dry` resolves the seed and shows the artist graph by hop (top artists, which source reached them). No catalogues, no tracks, nothing stored. |
+| `flow` | `-e/--explore` 0–1 · `-p/--popularity` · `-n` · `--per-artist` · `--stops` (5) · `--rng-seed` · `--save [NAME]` · `--dry` (profile and genre path only: no artist pools, catalogues or tracks)<br>**Taste:** `--yandex URL` · `--yandex-tracks N` · `--navidrome-url`. No seed: the playlist comes from your likes. |
 | `profile` | Same taste flags. Prints your genre profile and the nearest genres flow can head to. |
 | `deep-cuts` | `--user` (config / `$LISTENBRAINZ_USERNAME`) · `--kind exploration\|jams` (exploration) · `--save [NAME]` |
 | `feedback import FILE\|-` | Append a dated loves/hates batch |
 | `feedback batches` | List imported batches with dates |
 | `saved [name]` | List saved playlists, or print one |
 | `data build` | `--out` (dist) · `--skip graph,dump,weights` · `--keep-dump` · `--seeds` (1000) · `--similar` (10). Builds into `storage.data_dir` and packages `dist/data-YYYY-MM/`. All steps take about 30 min and ~3 GB of disk. |
-| `data fetch` | `--tag data-YYYY-MM` (newest) · `--no-store` (genre files only). Verifies against `manifest.json`, then installs into `storage.data_dir`. |
+| `data fetch` | `--tag data-YYYY-MM` (newest) · `--no-store` (genre files only) · `--dry` (just check: downloads only `manifest.json`, lists each file as same / changed / new and the download size, installs nothing). Verifies against `manifest.json`, then installs into `storage.data_dir`. |
 | `data status` | Shows the files in `storage.data_dir`, the installed release and the last build |
 | `serve` | `--host` (127.0.0.1) · `--port` (8765) |
 
@@ -24,12 +24,16 @@ Environment variables: `LISTENBRAINZ_TOKEN`, `LISTENBRAINZ_USERNAME`, `POSTRADIO
 `NAVIDROME_USERNAME`, `NAVIDROME_PASSWORD`. A `.env` file in the repository root is loaded at startup and
 doesn't override variables already set.
 
+**Seeds.** A radio or flow run without `--rng-seed` picks a seed and reports it (`# rng seed: N`, and
+`rng_seed` in the result). Passing it back repeats the run: the same path, and the same playlist while the
+cached API answers stay the same. Dry runs report it too, so a preview you like can be run for real.
+
 ## HTTP API: `postradio serve` (FastAPI, OpenAPI at `/docs`)
 
 | Endpoint | Does |
 |---|---|
-| `POST /radio` | Body: exactly one of `artist`, `track`, `artist_mbid`, `recording_mbid`, `genres`. Optional: `genre_op`, `unheard`, `explore`, `popularity`, `n` (1–500), `per_artist`, `rng_seed`, `auto_popularity`, `mix` (`{stream: 0..1}`). Returns **422** for invalid input (seed count, malformed MBID or track string, out-of-range values, unknown mix stream) and **404** when the seed doesn't exist. |
-| `POST /flow` | Body: `explore`, `popularity`, `n` (1–500), `per_artist`, `stops` (1–20), `rng_seed`. Uses the configured likes. **422** without likes. |
+| `POST /radio` | Body: exactly one of `artist`, `track`, `artist_mbid`, `recording_mbid`, `genres`. Optional: `genre_op`, `unheard`, `explore`, `popularity`, `n` (1–500), `per_artist`, `rng_seed`, `auto_popularity`, `mix` (`{stream: 0..1}`), `dry` (artist graph preview, nothing stored). Returns **422** for invalid input (seed count, malformed MBID or track string, out-of-range values, unknown mix stream) and **404** when the seed doesn't exist. |
+| `POST /flow` | Body: `explore`, `popularity`, `n` (1–500), `per_artist`, `stops` (1–20), `rng_seed`, `dry` (profile and path only). Uses the configured likes. **422** without likes. |
 | `GET /profile` | The genre profile flow starts from, plus nearby genres |
 | `GET /deep-cuts?user=&kind=exploration\|jams` | LB Weekly Exploration or Jams, one entry per week |
 | `GET /results/{id}` | An unsaved result from memory; 404 once expired |
@@ -54,8 +58,8 @@ with Recommender() as rec:                      # reads config.yaml / $POSTRADIO
 to plug in any `HistoryProvider` or `FeedbackProvider`, such as a Maloja or multi-scrobbler adapter.
 `flow(explore=, popularity=, n=, per_artist=, stops=, rng_seed=)` and `profile()` run flow mode from the
 configured likes.
-`data_build(out_dir, skip, keep_dump, seeds, similar)`, `data_fetch(tag, store)` and `data_status()`
-manage the optional files in `storage.data_dir`. `genre_graph()` returns the loaded `GenreGraph`.
+`data_build(out_dir, skip, keep_dump, seeds, similar)`, `data_fetch(tag, store)` and `data_check(tag)` (the dry fetch) and
+`data_status()` manage the optional files in `storage.data_dir`. `genre_graph()` returns the loaded `GenreGraph`.
 `with_config(...)` returns a modified copy; use it in a `with` block so its worker threads are released.
 
 ## config.yaml: user settings

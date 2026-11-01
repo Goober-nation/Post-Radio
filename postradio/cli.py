@@ -94,6 +94,8 @@ def parser() -> argparse.ArgumentParser:
     r.add_argument("--no-feedback", action="store_true", help="ignore loves/hates/ratings")
     r.add_argument("--navidrome-url", help="read stars/ratings from this Navidrome (creds from env)")
     r.add_argument("--save", nargs="?", const="", metavar="NAME", help="save the result (default name if omitted)")
+    r.add_argument("--dry", action="store_true", help="preview: resolve the seed and show the artist graph by hop, "
+                                                      "no tracks (repeat with --rng-seed)")
 
     def taste_flags(x):
         x.add_argument("--yandex", metavar="URL", help="public Yandex Music playlist (e.g. your likes) as taste")
@@ -108,6 +110,8 @@ def parser() -> argparse.ArgumentParser:
     fl.add_argument("--stops", type=int, default=5, help="genre stops along the path (5)")
     fl.add_argument("--rng-seed", type=int)
     fl.add_argument("--save", nargs="?", const="", metavar="NAME")
+    fl.add_argument("--dry", action="store_true", help="preview: profile and genre path only, no tracks "
+                                                       "(repeat with --rng-seed)")
     taste_flags(fl)
     pf = sub.add_parser("profile", help="your genre profile (what flow starts from) and nearby genres")
     taste_flags(pf)
@@ -137,6 +141,8 @@ def parser() -> argparse.ArgumentParser:
     df = dts.add_parser("fetch", help="install the newest data release (verified against its manifest)")
     df.add_argument("--tag", help="a specific data-YYYY-MM release")
     df.add_argument("--no-store", action="store_true", help="skip the ~600 MB artist store; genre files only")
+    df.add_argument("--dry", action="store_true", help="just check: list the release and what would change, "
+                                                       "downloading only its manifest")
     dts.add_parser("status", help="show what is installed")
 
     sv = sub.add_parser("serve", help="run the HTTP API")
@@ -199,6 +205,8 @@ def main(argv=None):
         if a.data_cmd == "build":
             steps = [s.strip() for s in a.skip.split(",") if s.strip()]
             out = {"release_dir": str(rec.data_build(a.out, steps, a.keep_dump, a.seeds, a.similar))}
+        elif a.data_cmd == "fetch" and a.dry:
+            out = rec.data_check(a.tag)
         elif a.data_cmd == "fetch":
             out = rec.data_fetch(a.tag, store=not a.no_store)
         else:
@@ -219,10 +227,18 @@ def main(argv=None):
         return
     if a.cmd == "flow":
         res = rec.flow(explore=a.explore, popularity=a.popularity, n=a.n, per_artist=a.per_artist,
-                       stops=a.stops, rng_seed=a.rng_seed)
+                       stops=a.stops, rng_seed=a.rng_seed, dry=a.dry)
+        if a.dry and not a.json:
+            log(f"rng seed: {res['rng_seed']} (repeat with --rng-seed {res['rng_seed']})")
+            print(f"path: {' -> '.join(res['path'])}")
+            print(f"tracks per stop: {res['tracks_per_stop']}  familiarity {res['familiarity']}  "
+                  f"explore {res['explore']}  learned weights: {res['graph_learned']}")
+            print("your genres: " + ", ".join(f"{x['genre']} {x['share']:.2f}" for x in res["profile"][:10]))
+            return
         if a.json:
             print(json.dumps(res, indent=2, ensure_ascii=False))
         else:
+            log(f"rng seed: {res['rng_seed']}")
             log(f"path: {' -> '.join(res['path'])} (familiarity {res['familiarity']}, flow {res['flow_score']})")
             for i, t in enumerate(res["tracks"], 1):
                 mark = "*" if t["familiar"] else " "
@@ -240,13 +256,26 @@ def main(argv=None):
         res = rec.generate(artist=a.artist, track=a.track, artist_mbid=a.artist_mbid, recording_mbid=a.recording_mbid,
                            genres=genres, genre_op=a.genre_op, unheard=a.unheard, explore=a.explore,
                            popularity=a.popularity, n=a.n, per_artist=a.per_artist, rng_seed=a.rng_seed,
-                           auto_popularity=a.auto_popularity, mix=_parse_mix(a.mix))
+                           auto_popularity=a.auto_popularity, mix=_parse_mix(a.mix), dry=a.dry)
+        if a.dry:
+            if a.json:
+                print(json.dumps(res, indent=2, ensure_ascii=False))
+                return
+            log(f"rng seed: {res['rng_seed']} (repeat with --rng-seed {res['rng_seed']})")
+            seed = res["seed"]["artist"] or "genres: " + ", ".join(res["genres"] or [])
+            print(f"seed: {seed}  mode {res['mode']}  max hops {res['max_hops']}  target hop {res['target_hop']}  "
+                  f"popularity target {res['popularity_target']}  graph {res['graph_size']} artists")
+            for h, info in res["hops"].items():
+                print(f"hop {h} ({info['artists']} artists): " + ", ".join(
+                    f"{x['artist']} [{'/'.join(x['via'])}]" for x in info["top"]))
+            return
     else:
         res = rec.deep_cuts(a.user, a.kind)
 
     if a.json:
         print(json.dumps(res, indent=2, ensure_ascii=False))
     elif a.cmd == "radio":
+        log(f"rng seed: {res['rng_seed']}")
         log(f"{len(res['tracks'])} tracks from {res['candidates']} candidates, "
             f"{rec.http.calls} network calls, {rec.http.failures} failed")
         for i, t in enumerate(res["tracks"], 1):
