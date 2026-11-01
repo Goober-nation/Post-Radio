@@ -164,8 +164,10 @@ class Recommender:
         tracks = [dz] + ([lb_top] if lb_top else [])  # LB's popularity endpoint is the only one needing a token
         tags = TroiTagRadio(http, token, a.troi_window_width, a.genre_recordings_per_artist)
         similar = [LBSimilar(http), dz, mb] + ([YandexSimilar(http, self.yandex)] if self.yandex else [])
-        taggers = {"mb": mb, **({"yandex": self.yandex} if self.yandex else {})}
+        mb_profile = mb.local() if self.store and not a.flow_profile_api else mb
+        taggers = {"mb": mb_profile, **({"yandex": self.yandex} if self.yandex else {})}
         return Providers(resolver=mb, similar=similar, tracks=tracks, profile_taggers=taggers,
+                         profile_resolver=mb_profile,
                          radios=[dz, TroiRadio(http, token, a.troi_window_width)], tagger=mb, tag_radio=tags,
                          history=self.history, feedback=self.feedback, track_similarity=LBSimilarRecordings(http),
                          genres=[tags, dz] + ([mb] if self.store or self.genre_index else []))

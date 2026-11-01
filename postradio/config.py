@@ -146,6 +146,8 @@ class Advanced:
     # flow mode (postradio/flow.py)
     flow_half_life_days: float = 180.0  # taste profile: a like this old counts half as much as the newest
     flow_profile_artists: int = 150  # artists whose genres are looked up for the profile (most-liked first)
+    flow_profile_api: bool = False  # with the store installed, also ask the MusicBrainz API (1-4 s each) for artists
+    #   the store doesn't know or has no genres for; off = store only (Yandex genres still cover them)
     flow_source_shares: dict[str, float] = field(default_factory=lambda: {
         "mb": 0.7,  # MusicBrainz artist genres (store first, then the API)
         "yandex": 0.3})  # Yandex album genres of the liked tracks

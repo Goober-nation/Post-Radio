@@ -157,6 +157,7 @@ class Providers:
     genres: list[GenreSource] = field(default_factory=list)
     # flow mode: genre sources for the taste profile, by name (keys of advanced.flow_source_shares)
     profile_taggers: dict[str, Tagger] = field(default_factory=dict)
+    profile_resolver: ArtistResolver | None = None  # None = resolver
 
 
 @dataclass
@@ -608,7 +609,9 @@ class Radio:
         weights = flow_mod.artist_weights(((f.artist, at) for f, at in likes), a.flow_half_life_days)
         top = sorted(weights, key=lambda k: (-weights[k], k))[: a.flow_profile_artists]
         weights = {k: weights[k] for k in top}
-        resolved = dict(zip(top, self._map(self.p.resolver.find_artist, top), strict=True))
+        resolver = self.p.profile_resolver or self.p.resolver
+        calls_before = getattr(getattr(resolver, "http", None), "calls", 0)
+        resolved = dict(zip(top, self._map(resolver.find_artist, top), strict=True))
         sources = []
         for name, tagger in self.p.profile_taggers.items():
             share = a.flow_source_shares.get(name, 0.0)
@@ -619,6 +622,9 @@ class Radio:
             got = {x: g for x, g in zip(top, tags, strict=True) if g}
             self.log(f"profile: {name} genres for {len(got)} of {len(top)} artists")
             sources.append((got, share))
+        calls = getattr(getattr(resolver, "http", None), "calls", 0) - calls_before
+        self.log(f"profile: {sum(1 for v in resolved.values() if v)} of {len(top)} artists resolved, "
+                 f"{calls} network calls")
         profile = flow_mod.taste_profile(weights, sources)
         if not profile:
             raise InvalidInput("flow: no genres found for the liked artists")

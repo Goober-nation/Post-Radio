@@ -66,6 +66,12 @@ Checked on real services:
   4. Liked tracks are dropped whatever the source (the webpage relied on Yandex history).
   5. The junk filter (also used by radio) gained: tribute, originally performed, in the style of,
      re-recording, from the series/film/movie/game.
+- The user's first real `profile` (952-track Yandex playlist, store installed) took 1–2 min: "mb genres for
+  130 of 150". Each artist the store didn't know cost ~4.5 API calls (~10 s), and each it knew without
+  genres ~1.4 calls (~1.7 s). The profile now uses a store-only MusicBrainz view (`MusicBrainz.local()`)
+  whenever the store is installed, and Yandex genres cover the gaps. `advanced.flow_profile_api: true`
+  brings the API fallback back. The log line reports resolved artists and network calls. Measured: 22
+  artists (2 of them made-up names) took 1 s with 0 calls.
 - Not ported (Post-Radio already covers these): the webpage's own Deezer client and cache; the Gumbel
   temperature and position weight, replaced by `pop_fit`, jitter and `--rng-seed`; `title_key` remains
   only for song de-duplication in `fill`.

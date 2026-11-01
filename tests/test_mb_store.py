@@ -137,3 +137,11 @@ def test_genre_names_pages_through_the_api():
              100: {"genre-count": 103, "genres": [{"id": "3", "name": "jazz"}, {"id": None, "name": "bad"}]}}
     mb = MusicBrainz(NoHttp({"/genre/all": lambda p: pages[p["offset"]]}))
     assert mb.genre_names() == {"1": "rock", "2": "pop", "3": "jazz"}
+
+
+def test_local_view_never_calls_the_api():
+    http = NoHttp({"/artist": {"artists": [{"id": "x", "name": "Somebody"}]}})
+    local = MusicBrainz(http, store=make_store()).local()
+    assert local.find_artist("Kanye West") == Artist("Ye", mbid="ye")
+    assert local.find_artist("Somebody") is None and local.tags(Artist("Nobody", mbid="c")) == []
+    assert http.calls == []

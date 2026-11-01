@@ -17,16 +17,25 @@ class MusicBrainz(ArtistResolver, SimilarArtists, Tagger, GenreSource):
     name = "mb"
     max_hop = 1
 
-    def __init__(self, http: Http, store: ArtistStore | None = None, index: GenreIndex | None = None):
+    def __init__(self, http: Http, store: ArtistStore | None = None, index: GenreIndex | None = None,
+                 api: bool = True):
         """store: the local artist store (names, aliases, genres, genre -> artists); index: the small
-        genre -> artists file for users without the store. Both optional."""
-        self.http, self.store, self.index = http, store, index
+        genre -> artists file for users without the store. Both optional. api=False answers from the store
+        only (see local())."""
+        self.http, self.store, self.index, self.api = http, store, index, api
         self._known_genres: set[str] | None = None
+
+    def local(self) -> "MusicBrainz":
+        """A store-only view: artists the store doesn't know (or knows without genres) cost no API calls.
+        Bulk lookups (a flow profile over 150 liked artists) use it, since each API fallback is 1-4 s."""
+        return MusicBrainz(self.http, self.store, self.index, api=False)
 
     def find_artist(self, name: str) -> Artist | None:
         """Store first: aliases resolve there (Kanye West -> Ye) and the best-tagged namesake wins."""
         if self.store and (hits := self.store.resolve(name, limit=1)):
             return Artist(hits[0]["name"], mbid=hits[0]["mbid"])
+        if not self.api:
+            return None
         d = self.http.get(f"{API}/artist", params={"query": name, "fmt": "json", "limit": 5})
         arts = parse_rows((d or {}).get("artists"), lambda a: a if a["id"] and a["name"] else None)
         exact = [a for a in arts if norm(a["name"]) == norm(name)]
@@ -65,6 +74,8 @@ class MusicBrainz(ArtistResolver, SimilarArtists, Tagger, GenreSource):
             return []
         if self.store and (got := self.store.genres(artist.mbid)):
             return got[:n]
+        if not self.api:
+            return []
         d = self.http.get(f"{API}/artist/{seg(artist.mbid)}", params={"inc": "tags genres", "fmt": "json"})
         counts = self._count((d or {}).get("tags") or [])
         if not counts:

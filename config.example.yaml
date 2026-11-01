@@ -121,6 +121,7 @@ advanced:
   genre_spread_decay: 0.5
   flow_half_life_days: 180.0
   flow_profile_artists: 150
+  flow_profile_api: false
   flow_source_shares:
     mb: 0.7
     yandex: 0.3
