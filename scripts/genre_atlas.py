@@ -203,7 +203,8 @@ def build(home: str, export: str | None) -> dict:
     if export:
         listener = load_listener(export)
         for hl in sorted(set(HALF_LIVES) | {hl_default}):
-            adv = dataclasses.replace(a, flow_half_life_days=hl)
+            # uncapped here, so the page's max-share slider can go both ways; real paths apply the cap below
+            adv = dataclasses.replace(a, flow_half_life_days=hl, flow_max_genre_share=1.0)
             with rec.with_config(advanced=adv) as r:
                 res = r.profile(listener)
             variants[hl] = {r_["genre"]: r_["share"] for r_ in res.profile}
@@ -251,12 +252,16 @@ def build(home: str, export: str | None) -> dict:
                 out[f"{ex:.2f}"].append([idx[g] for g in path])
         return out
 
-    real = real_paths(spread, profile) if spread else {}
+    def capped(prof):
+        c = flow_mod.cap_shares(prof, a.flow_max_genre_share)
+        return graph.spread(c, a.genre_spread_hops, a.genre_spread_decay), c
+
+    real = real_paths(*capped(profile)) if spread else {}
     packed = {}
     for hl, prof in variants.items():
         sp = graph.spread(prof, a.genre_spread_hops, a.genre_spread_decay)
         packed[str(hl)] = {"profile": [[idx[g], v] for g, v in prof.items()],
-                           "spread": [[idx[x.genre], x.score, x.hop] for x in sp], "real": real_paths(sp, prof)}
+                           "spread": [[idx[x.genre], x.score, x.hop] for x in sp], "real": real_paths(*capped(prof))}
     return {
         "meta": {"nodes": len(names), "edges": n_edges, "learned": graph.learned, "taste": bool(profile),
                  "taste_nodes": len(taste_ids), "taste_edges": len(tedges), "input": nearby_input,
