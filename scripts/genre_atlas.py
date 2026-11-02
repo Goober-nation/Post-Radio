@@ -387,6 +387,13 @@ button:hover{border-color:var(--muted)}
       <label class="f">Minimum weight: <b id="thv">0.00</b> <span class="m" id="thn"></span></label>
       <input type="range" id="th" min="0" max="0.6" step="0.01" value="0">
     </details>
+    <details open><summary>Dot size</summary>
+      <p class="sub">Your genres: by taste share. Other genres: by number of links (in Blend, plus closeness to your taste). Both grow with zoom.</p>
+      <label class="f">Your genres: <b id="szTv">1.0</b>&times;</label>
+      <input type="range" id="szT" min="0.2" max="3" step="0.1" value="1">
+      <label class="f">Other genres: <b id="szOv">1.0</b>&times;</label>
+      <input type="range" id="szO" min="0.2" max="3" step="0.1" value="1">
+    </details>
     <details open><summary>Legend</summary><div id="legend"></div></details>
     <details><summary>About</summary><p class="sub" id="about"></p></details>
   </aside>
@@ -648,11 +655,14 @@ function centerOn(g, minZoom) {
 // ---- drawing
 let raf = 0;
 const schedule = () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; draw(); }); };
+// dot sizes: your genres by taste share, other genres by number of links (+ closeness to your taste in Blend);
+// both grow with sqrt(zoom). SZ_T / SZ_O are the sidebar multipliers.
+let SZ_T = 1, SZ_O = 1;
 function nodeR(g) {
   const z = Math.min(Math.max(Math.sqrt(zoomRel()), 0.75), 4.5);
-  if (S.mode === "taste" || (S.mode === "blend" && inTaste[g])) return (3.2 + 34 * Math.sqrt(share[g] / 0.34 * 0.34)) * (S.mode === "taste" ? 1 : 0.8) * z;
+  if (S.mode === "taste" || (S.mode === "blend" && inTaste[g])) return (3.2 + 34 * Math.sqrt(share[g])) * (S.mode === "taste" ? 1 : 0.8) * z * SZ_T;
   const base = 1.6 + 0.55 * Math.sqrt(deg[g]);
-  return (S.mode === "blend" ? base * 0.8 + 3.5 * relR(g) : base) * z;
+  return (S.mode === "blend" ? base * 0.8 + 3.5 * relR(g) : base) * z * SZ_O;
 }
 function hueOf(g) {
   const r = D.roots[g]; if (!r || !r.length) return -1;
@@ -948,6 +958,7 @@ function saveHash() {
   add("mode", S.mode); add("ex", $("#ex").value); add("stops", $("#stops").value); add("seed", $("#seed").value);
   if (S.showReal) add("real", 1);
   if (TH > 0) add("th", TH.toFixed(2));
+  if (SZ_T !== 1) add("szt", SZ_T); if (SZ_O !== 1) add("szo", SZ_O);
   try { history.replaceState(null, "", "#" + q.join("&")); } catch (e) { /* sandboxed */ }
 }
 function loadHash() {
@@ -959,6 +970,8 @@ function loadHash() {
   if (g("to") >= 0) { S.to = g("to"); $("#to").value = labels[S.to]; }
   if (g("start") >= 0) { S.start = g("start"); $("#start").value = labels[S.start]; }
   if (h.get("th")) { TH = Math.min(Math.max(+h.get("th") || 0, 0), 0.6); $("#th").value = TH; applyTh(); }
+  for (const [k, id] of [["szt", "szT"], ["szo", "szO"]]) if (h.get(k)) { const v = Math.min(Math.max(+h.get(k) || 1, 0.2), 3);
+    $("#" + id).value = v; if (k === "szt") SZ_T = v; else SZ_O = v; $("#" + id + "v").textContent = v.toFixed(1); }
   if (h.get("real")) { S.showReal = true; $("#showReal").checked = true; }
 }
 $("#zin").onclick = () => { zoomAt(W / 2, H / 2, 1.5); schedule(); };
@@ -1055,6 +1068,10 @@ function thText() {
   const [ka] = keptEdges();
   $("#thv").textContent = TH.toFixed(2); $("#thn").textContent = `(${ka} of ${nE} links kept)`;
 }
+for (const id of ["szT", "szO"]) $("#" + id).addEventListener("input", () => {
+  const v = +$("#" + id).value; if (id === "szT") SZ_T = v; else SZ_O = v;
+  $("#" + id + "v").textContent = v.toFixed(1); saveHash(); schedule();
+});
 $("#th").addEventListener("input", () => { TH = +$("#th").value; applyTh(); thText(); updateRoute(); updateSim(); saveHash(); schedule(); });
 for (const id of ["ex", "stops", "seed"]) $("#" + id).addEventListener("input", () => { updateSim(); saveHash(); schedule(); });
 $("#reroll").onclick = () => { $("#seed").value = Math.floor(Math.random() * 1e6); updateSim(); saveHash(); schedule(); };
