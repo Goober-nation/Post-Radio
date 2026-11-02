@@ -156,7 +156,7 @@ class Advanced:
     genre_spread_hops: int = 2  # a taste profile spreads this many hops over the genre graph...
     genre_spread_decay: float = 0.5  # ...losing this factor per hop (times the edge weight)
     # flow mode (postradio/flow.py)
-    flow_half_life_days: float = 730.0  # taste profile: a like this old counts half as much as the newest
+    flow_half_life_days: float = 365.0  # taste profile: a like this old counts half as much as the newest; 0 = off
     flow_profile_artists: int = 150  # artists whose genres are looked up for the profile (most-liked first)
     flow_profile_api: bool = False  # with the store installed, also ask the MusicBrainz API (1-4 s each) for artists
     #   the store doesn't know or has no genres for; off = store only (Yandex genres still cover them)
@@ -165,9 +165,12 @@ class Advanced:
         "yandex": 0.3})  # Yandex album genres of the liked tracks
     flow_genre_rarity: float = 1.0  # profile: weight genres by rarity among artists (store); 0 = off
     flow_parent_discount: float = 0.3  # profile: a genre next to one of its subgenres counts this much; 1 = off
-    flow_destination_from: float = 0.3  # below this explore, the path only tours the user's own genres
-    flow_destination_width: float = 0.2  # how closely the destination must match the closeness explore asks for
-    flow_destination_reach: float = 0.6  # wanted closeness of the destination = 1 - reach * explore
+    # explore sets these on a straight line from (value at explore 0, value at explore 1); explicit call args win
+    flow_stops: tuple[float, float] = (2, 5)  # genre stops on the path (rounded)
+    flow_taste_weight: tuple[float, float] = (2.0, 0.7)  # step score = link weight x closeness ** this
+    flow_min_link_weight: tuple[float, float] = (0.07, 0.07)  # genre links weaker than this are not walked
+    flow_min_genre_weight: float = 0.23  # genres below this weight are left out of the walk (see docs)
+    flow_radius: int = 0  # >0: every stop within this many links of the start; 0 = off
     flow_new_artists: int = 30  # new-artist candidates fetched per stop (per genre source)
     flow_familiar_artists: int = 12  # liked artists considered per stop
     flow_tracks_per_artist: int = 5  # an artist's best-fitting tracks kept as candidates

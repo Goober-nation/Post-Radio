@@ -185,7 +185,10 @@ class FlowRequest(BaseModel):
     popularity: float | None = Field(None, ge=0, le=1)
     n: int | None = Field(None, ge=1, le=500)
     per_artist: int | None = Field(None, ge=1)
-    stops: int = Field(5, ge=1, le=20)
+    stops: int | None = Field(None, ge=1, le=20)  # None = from explore
+    taste_weight: float | None = Field(None, ge=0, le=5)  # None = from explore
+    min_link_weight: float | None = Field(None, ge=0, le=1)  # None = from explore
+    radius: int | None = Field(None, ge=0, le=10)  # None = advanced.flow_radius
     start: str | None = None  # the first genre stop; None = one of the listener's strongest genres
     rng_seed: int | None = None
     dry: bool = False  # preview the profile and genre path only; nothing is stored

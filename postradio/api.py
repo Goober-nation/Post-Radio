@@ -131,6 +131,7 @@ def _flow_playlist(res: dict, rng_seed: int) -> Playlist:
     stats = {"stops": res.get("stops"), "candidates": res.get("candidates"), "graph_learned": res.get("graph_learned"),
              "input": res.get("input")}
     return Playlist("flow", tracks, res["explore"], res["popularity"], rng_seed, genre_path=res["path"],
+                    plan=res.get("plan"),
                     profile=res["profile"], familiarity=res["familiarity"], flow_score=res["flow_score"], stats=stats)
 
 
@@ -339,8 +340,9 @@ class Recommender:
         return self._remember(_radio_playlist(res, rng_seed), self._radio_name(res), keep)
 
     def flow(self, *, explore: float | None = None, popularity: float | None = None, n: int | None = None,
-             per_artist: int | None = None, stops: int = 5, start: str | None = None, rng_seed: int | None = None,
-             dry: bool = False,
+             per_artist: int | None = None, stops: int | None = None, start: str | None = None,
+             taste_weight: float | None = None, min_link_weight: float | None = None, radius: int | None = None,
+             rng_seed: int | None = None, dry: bool = False,
              keep: bool = False, listener: Listener | None = None,
              progress: Callable[[Progress], None] | None = None, cancel=None,
              timeout_s: float | None = None) -> Playlist | FlowPreview:
@@ -348,15 +350,23 @@ class Recommender:
         how far from their genres), filled with familiar and new artists. Needs likes (Yandex playlist,
         Navidrome stars, LB loves or imported loves). Without rng_seed a seed is picked and reported, so the
         same path/playlist can be had again; dry=True stops after the profile and the path (no tracks).
-        start: the first genre stop (any genre of the graph); None = one of the listener's strongest."""
+        start: the first genre stop (any genre of the graph); None = one of the listener's strongest.
+        explore sets stops, taste_weight and min_link_weight (advanced.flow_*: straight lines between their values
+        at explore 0 and 1) and the share of new artists; passing a value overrides it. radius (advanced) keeps
+        every stop within that many links of the start. The result's `plan` lists every value used and warnings."""
         rng_seed = new_seed() if rng_seed is None else rng_seed
         d = self.cfg.defaults
         p = Params(explore=d.explore if explore is None else explore, n=d.n if n is None else n,
                    per_artist=d.per_artist if per_artist is None else per_artist, seed=rng_seed,
                    popularity=popularity if popularity is not None else d.popularity, stops=stops,
+                   taste_weight=taste_weight, min_link_weight=min_link_weight, radius=radius,
                    start=self._graph_genre(start) if start else None, adv=self.cfg.advanced)
-        if p.n < 1 or p.per_artist < 1 or not 1 <= p.stops <= 20:
+        if p.n < 1 or p.per_artist < 1 or (p.stops is not None and not 1 <= p.stops <= 20):
             raise InvalidInput("n and per_artist must be at least 1, stops 1..20")
+        for name, v, lo, hi in (("taste_weight", taste_weight, 0, 5), ("min_link_weight", min_link_weight, 0, 1),
+                                ("radius", radius, 0, 10)):
+            if v is not None and not lo <= v <= hi:
+                raise InvalidInput(f"{name} must be in [{lo}, {hi}]")
         for name, v in (("explore", p.explore), ("popularity", p.popularity)):
             if v is not None and not 0 <= v <= 1:
                 raise InvalidInput(f"{name} must be in [0, 1]")
@@ -364,7 +374,7 @@ class Recommender:
         if dry:
             return FlowPreview(rng_seed, res["path"], res["explore"], res["popularity"], res["stops"],
                                res["tracks_per_stop"], res["familiarity"], res["graph_learned"], res["profile"],
-                               res["nearby"], res.get("input"))
+                               res["nearby"], res.get("input"), res.get("plan"))
         pop = "auto" if p.popularity is None else f"{p.popularity:.2f}"
         name = f"{datetime.now(UTC):%Y-%m-%d}_flow_e{p.explore:.2f}_p{pop}"
         return self._remember(_flow_playlist(res, rng_seed), name, keep)

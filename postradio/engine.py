@@ -75,7 +75,10 @@ class Params:
     popularity: float | None = None  # None = derived from explore
     unheard: str | None = None  # None | "tracks" (drop played tracks) | "artists" (also drop known artists)
     mix: dict[str, float] = field(default_factory=dict)  # stream -> 0..1 share of what it offers (missing = 1)
-    stops: int = 5  # flow mode: genre stops along the path
+    stops: int | None = None  # flow mode: genre stops (None = from explore)
+    taste_weight: float | None = None  # flow mode: None = from explore
+    min_link_weight: float | None = None  # flow mode: None = from explore
+    radius: int | None = None  # flow mode: None = advanced.flow_radius
     taste: bool = True  # False: likes/dislikes don't change scores; disliked tracks and artists are still dropped
     start: str | None = None  # flow mode: the first genre stop (None = one of the listener's strongest)
     adv: Advanced = field(default_factory=Advanced)
@@ -797,25 +800,67 @@ class Radio:
         top = math.log(total + 1) or 1.0
         return {g: (math.log((total + 1) / (n + 1)) / top) ** k for g, n in counts.items()}
 
+    def flow_plan(self, p: Params, graph: GenreGraph, profile: dict[str, float]) -> tuple[dict, dict]:
+        """The values this flow runs with (explore sets those not given explicitly) and the genre graph it may
+        walk: links below min_link_weight and genres below flow_min_genre_weight left out. Genre weight: a profile
+        genre's sqrt(share / top share), any other genre's log(1 + links) / log(1 + most links)."""
+        a, e = self.a, p.explore
+        explicit: list[str] = []
+
+        def pick(name, given, derived):
+            if given is not None:
+                explicit.append(name)
+                return given
+            return derived
+
+        plan = {
+            "explore": e,
+            "stops": int(pick("stops", p.stops, round(flow_mod.interp(a.flow_stops, e)))),
+            "taste_weight": pick("taste_weight", p.taste_weight, round(flow_mod.interp(a.flow_taste_weight, e), 3)),
+            "min_link_weight": pick("min_link_weight", p.min_link_weight,
+                                    round(flow_mod.interp(a.flow_min_link_weight, e), 3)),
+            "radius": int(pick("radius", p.radius, a.flow_radius)),
+            "new_artist_share": e,
+            "min_genre_weight": a.flow_min_genre_weight, "half_life_days": a.flow_half_life_days,
+            "genre_rarity": a.flow_genre_rarity, "parent_discount": a.flow_parent_discount,
+            "start": p.start, "explicit": explicit, "warnings": [],
+        }
+        top = max(profile.values(), default=0) or 1.0
+        most = max((len(v) for v in graph.adj.values()), default=1)
+
+        def weight(g: str) -> float:
+            if g in profile:
+                return math.sqrt(profile[g] / top)
+            return math.log1p(len(graph.adj.get(g, {}))) / math.log1p(most)
+
+        keep = {g for g in graph.adj if weight(g) >= plan["min_genre_weight"]}
+        if p.start and p.start not in keep:
+            keep.add(p.start)
+            plan["warnings"].append(f"start genre {p.start} is below min_genre_weight; kept as the start only")
+        adj = {g: {n: w for n, w in nb.items() if n in keep and w >= plan["min_link_weight"]}
+               for g, nb in graph.adj.items() if g in keep}
+        plan["walkable"] = {"genres": len(adj), "links": sum(len(v) for v in adj.values()) // 2}
+        return plan, adj
+
     def flow(self, p: Params, graph: GenreGraph, dry: bool = False) -> dict:
         """A playlist with no seed: the user's taste profile (from their likes) spread over the genre graph, a
         path of p.stops genre stops (explore decides how far it leaves their genres), each stop filled with
         familiar and new artists' tracks, scored like generate() (popularity fit, taste, jitter)."""
         a, rng = self.a, random.Random(p.seed)
-        cfg = flow_mod.PlannerConfig(destination_from=a.flow_destination_from,
-                                     destination_width=a.flow_destination_width,
-                                     destination_reach=a.flow_destination_reach)
         history, taste = self.history(), self.taste()
         top, resolved, sources, profile, spread, used = self.profile(graph)
-        roots = {g: n.roots for g, n in graph.nodes.items()}
-        path = flow_mod.plan_path(spread, graph.adj, p.explore, p.stops, random.Random(rng.random()), roots, cfg,
-                                  start=p.start)
+        plan, adj = self.flow_plan(p, graph, profile)
+        path = flow_mod.plan_path(spread, adj, plan["stops"], plan["taste_weight"], random.Random(rng.random()),
+                                  start=p.start, radius=plan["radius"], warnings=plan["warnings"])
         self.log("path: " + " -> ".join(path))
-        self._report("path", len(path), p.stops, " -> ".join(path))
+        for w in plan["warnings"]:
+            self.log(f"flow: {w}")
+        self._report("path", len(path), plan["stops"], " -> ".join(path))
         counts = flow_mod.allocate(p.n, len(path))
         if dry:  # preview: profile and path only, no artist pools or catalogues
             return {"dry": True, "rng_seed": p.seed, "path": path, "explore": p.explore, "popularity": p.popularity,
-                    "stops": p.stops, "tracks_per_stop": counts, "familiarity": flow_mod.familiarity(path, spread),
+                    "stops": plan["stops"], "plan": plan, "tracks_per_stop": counts,
+                    "familiarity": flow_mod.familiarity(path, spread),
                     "graph_learned": graph.learned, "input": used,
                     "profile": [{"genre": g, "share": s} for g, s in list(profile.items())[:20]],
                     "nearby": [{"genre": s.genre, "score": s.score, "hop": s.hop} for s in spread if s.hop > 0][:20]}
@@ -870,7 +915,7 @@ class Radio:
         self.log(f"flow: {len(tracks)} tracks over {len(path)} stops")
         self._report("done", len(tracks), p.n)
         return {
-            "path": path, "explore": p.explore, "popularity": p.popularity, "stops": p.stops,
+            "path": path, "explore": p.explore, "popularity": p.popularity, "stops": plan["stops"], "plan": plan,
             "profile": [{"genre": g, "share": s} for g, s in list(profile.items())[:20]],
             "familiarity": flow_mod.familiarity(path, spread),
             "flow_score": flow_mod.flow_score(tracks, graph.adj),

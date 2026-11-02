@@ -111,7 +111,10 @@ def parser() -> argparse.ArgumentParser:
     fl.add_argument("-p", "--popularity", type=_unit, help="0 = deep cuts/small artists, 1 = hits")
     fl.add_argument("-n", type=int)
     fl.add_argument("--per-artist", type=int)
-    fl.add_argument("--stops", type=int, default=5, help="genre stops along the path (5)")
+    fl.add_argument("--stops", type=int, help="genre stops along the path (default: from explore)")
+    fl.add_argument("--taste-weight", type=float, help="how strongly taste steers each step (default: from explore)")
+    fl.add_argument("--min-link", type=float, help="genre links weaker than this aren't walked (default: from explore)")
+    fl.add_argument("--radius", type=int, help="keep every stop within N links of the start (advanced)")
     fl.add_argument("--start", metavar="GENRE", help="first genre stop (default: one of your strongest genres)")
     fl.add_argument("--rng-seed", type=int)
     fl.add_argument("--save", nargs="?", const="", metavar="NAME")
@@ -229,7 +232,8 @@ def main(argv=None):
         return
     if a.cmd == "flow":
         res = rec.flow(explore=a.explore, popularity=a.popularity, n=a.n, per_artist=a.per_artist,
-                       stops=a.stops, start=a.start, rng_seed=a.rng_seed, dry=a.dry, keep=a.save is not None).to_dict()
+                       stops=a.stops, start=a.start, taste_weight=a.taste_weight, min_link_weight=a.min_link,
+                       radius=a.radius, rng_seed=a.rng_seed, dry=a.dry, keep=a.save is not None).to_dict()
         if a.dry and not a.json:
             log(f"rng seed: {res['rng_seed']} (repeat with --rng-seed {res['rng_seed']})")
             print(f"path: {' -> '.join(res['genre_path'])}")

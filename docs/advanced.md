@@ -123,15 +123,17 @@ Terms used below:
 
 | key | default | what it does |
 |---|---|---|
-| `flow_half_life_days` | 730 | A like this many days older than the newest counts half (0 = no decay). Long by default: a library is years of likes, not a mood |
+| `flow_half_life_days` | 365 | A like this many days older than the newest counts half (0 = no decay). Long by default: a library is years of likes, not a mood |
 | `flow_profile_artists` | 150 | Most-liked artists whose genres make up the profile |
 | `flow_profile_api` | false | With the store installed, also ask the MusicBrainz API for artists the store doesn't know or has no genres for (1–4 s each). Off = store only. |
 | `flow_source_shares` | mb 0.7, yandex 0.3 | Blend of genre sources in the profile; each is normalised on its own first |
 | `flow_genre_rarity` | 1.0 | Profile: weights each genre by how rare it is among artists in the store, `(log(N / artists with it) / log N) ^ this`, so broad tags like pop or hip hop count less than specific ones. 0 = off; needs the store |
 | `flow_parent_discount` | 0.3 | Profile: when an artist has a genre and one of its subgenres (Wikidata "subgenre of"), the broader one counts this much for that artist. 1 = off |
-| `flow_destination_from` | 0.3 | Below this explore, the path only tours your own genres |
-| `flow_destination_reach` | 0.6 | The destination's wanted closeness = `1 − reach × explore`, relative to the closest eligible genre (0.7 at explore 0.5, 0.4 at 1) |
-| `flow_destination_width` | 0.2 | How strictly the destination must match that closeness |
+| `flow_stops` | [2, 5] | Genre stops on the path, at explore 0 and 1 (straight line between, rounded). `stops=` overrides it |
+| `flow_taste_weight` | [2.0, 0.7] | How strongly taste steers each step, at explore 0 and 1: a step scores link weight × closeness ^ this. 0 = follow link strength only. `taste_weight=` overrides it |
+| `flow_min_link_weight` | [0.07, 0.07] | Genre links weaker than this aren't walked, at explore 0 and 1 (equal = not tied to explore). Most links are under 0.2 and act as shortcuts. `min_link_weight=` overrides it |
+| `flow_min_genre_weight` | 0.23 | Genres below this weight are left out of the walk. Weight: a profile genre's √(share ÷ top share), any other genre's log(1 + links) ÷ log(1 + most links). 0.23 drops your minor genres (under ~5% of your top one) and genres with only a few links |
+| `flow_radius` | 0 | Every stop within this many links of the start; 0 = off. `radius=` overrides it |
 | `flow_new_artists` | 30 | Upper limit on new-artist candidates per stop (actually about 3 per wanted new track) |
 | `flow_familiar_artists` | 12 | Upper limit on liked artists per stop (actually about 3 per wanted familiar track) |
 | `flow_tracks_per_artist` | 5 | An artist's best-fitting tracks kept as candidates |

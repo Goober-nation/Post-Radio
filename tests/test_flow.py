@@ -9,14 +9,13 @@ from postradio.engine import Params, Providers, Radio
 from postradio.errors import InvalidInput
 from postradio.flow import (
     Pick,
-    PlannerConfig,
     allocate,
     artist_weights,
-    destination,
     familiarity,
     fill,
     fit,
     flow_score,
+    interp,
     order,
     plan_path,
     route_between,
@@ -40,21 +39,42 @@ def c(artist, genres, familiar=True, score=1.0, title=None):
     return Pick(Track(title or f"{artist} song", Artist(artist)), genres, familiar, score)
 
 
-def test_explore_0_tours_own_genres_and_1_leaves_them():
-    for seed in range(20):
-        home = plan_path(SPREAD, ADJ, explore=0, stops=4, rng=random.Random(seed))
-        assert not {"cloud rap", "neo soul"} & set(home) and len(home) == len(set(home)) == 4
-    away = [set(plan_path(SPREAD, ADJ, explore=1, stops=4, rng=random.Random(s))) & {"cloud rap", "neo soul"}
-            for s in range(20)]
-    assert sum(bool(w) for w in away) >= 15
+def test_taste_weight_keeps_the_walk_on_own_genres_and_0_follows_links():
+    near = {"cloud rap", "neo soul"}  # spread hop 1: not the listener's own
+    heavy = [set(plan_path(SPREAD, ADJ, stops=4, taste_weight=4, rng=random.Random(s))) & near for s in range(30)]
+    light = [set(plan_path(SPREAD, ADJ, stops=4, taste_weight=0, rng=random.Random(s))) & near for s in range(30)]
+    assert sum(map(bool, heavy)) < sum(map(bool, light))
     assert familiarity(["hip hop"], SPREAD) == 1.0 and familiarity(["cloud rap"], SPREAD) == 0.0
 
 
 def test_path_steps_along_edges_and_a_seed_repeats_it():
-    path = plan_path(SPREAD, ADJ, explore=.5, stops=4, rng=random.Random(1))
+    path = plan_path(SPREAD, ADJ, stops=4, rng=random.Random(1))
     for a, b in zip(path, path[1:], strict=False):
-        assert b in ADJ[a] or not set(ADJ[a]) - set(path[:path.index(b)])  # an edge, or a jump at a dead end
-    assert plan_path(SPREAD, ADJ, explore=.5, stops=4, rng=random.Random(1)) == path
+        assert b in ADJ[a] or not set(ADJ[a]) - set(path[:path.index(b)])  # an edge, or routed past a dead end
+    assert plan_path(SPREAD, ADJ, stops=4, rng=random.Random(1)) == path
+    assert len(path) == len(set(path)) == 4
+
+
+def test_a_stuck_walk_routes_through_the_graph_and_says_so():
+    # from neo soul the only link is jazz rap; after it the walk must go back through hip hop
+    warnings: list[str] = []
+    path = plan_path(SPREAD, ADJ, stops=6, rng=random.Random(3), start="neo soul", warnings=warnings)
+    assert path[:2] == ["neo soul", "jazz rap"] and len(path) == len(set(path)) == 6
+    for a, b in zip(path, path[1:], strict=False):
+        assert b in ADJ[a] or any("routed" in w for w in warnings)
+    island = {"x": {}, **ADJ}
+    w2: list[str] = []
+    assert plan_path(SPREAD, island, stops=3, start="x", warnings=w2) == ["x"] and "ended after 1" in w2[0]
+
+
+def test_radius_keeps_every_stop_near_the_start():
+    for s in range(10):
+        path = plan_path(SPREAD, ADJ, stops=6, rng=random.Random(s), start="trap", radius=1)
+        assert set(path) <= {"trap", "hip hop", "cloud rap"}  # trap and its direct neighbours only
+
+
+def test_interp():
+    assert interp((2, 5), 0) == 2 and interp((2, 5), 1) == 5 and interp((2.0, 0.7), 0.5) == 1.35
 
 
 def test_allocate():
@@ -116,14 +136,6 @@ def test_fill_prefers_artists_whose_top_genres_match_and_dedupes_titles():
             c("Dup2", ["trap"], score=4, title="Forever feat. Someone")]
     (picks,) = fill(["trap"], {"trap": pool}, [3], explore=0)
     assert [p.artist for p in picks] == ["Dup1", "Strict", "Loose"]  # Dup2 is the same song; Loose only fills up
-
-
-def test_explore_heads_for_a_destination_outside_the_start_family():
-    roots = {g: ("hip hop",) for g in ("hip hop", "trap", "jazz rap", "pop rap", "cloud rap")} | {"neo soul": ("r&b",)}
-    for seed in range(10):
-        path = plan_path(SPREAD, ADJ, explore=1, stops=4, rng=random.Random(seed), roots=roots)
-        assert "neo soul" in path and path[path.index("neo soul") - 1] == "jazz rap"  # along the graph
-        assert "neo soul" not in plan_path(SPREAD, ADJ, explore=0, stops=4, rng=random.Random(seed), roots=roots)
 
 
 def test_route_and_fit():
@@ -196,15 +208,17 @@ def test_radio_flow_without_likes_is_a_clear_error():
         r.flow(Params(), graph())
 
 
-def test_destination_distance_follows_explore_even_when_every_outside_genre_is_far():
-    # a broad profile: the closest outside genre is only 0.2 of the top genre. Relative to it, "mid" is 0.7 and
-    # "far" 0.4: exactly what explore 0.5 and 1 ask for (1 - 0.6 × explore)
-    f = {"home": 1.0}
-    r = {"home": 1.0, "near": 0.2, "mid": 0.14, "far": 0.08}
-    roots = {"home": ("home",), "near": ("x",), "mid": ("y",), "far": ("z",)}
-    cfg = PlannerConfig(destination_width=0.1)
-    picks = {e: {destination("home", f, r, e, random.Random(s), roots, cfg) for s in range(20)} for e in (0.5, 1)}
-    assert picks == {0.5: {"mid"}, 1: {"far"}}
+def test_explore_sets_the_plan_and_explicit_values_win():
+    likes = [(Feedback("Seed", "Seed song 0", 1.0, "likes"), 100)]
+    with radio(likes) as r:
+        low = r.flow(Params(explore=0, n=6, seed=1), graph(), dry=True)["plan"]
+        high = r.flow(Params(explore=1, n=6, seed=1), graph(), dry=True)["plan"]
+        mine = r.flow(Params(explore=1, n=6, seed=1, stops=3, taste_weight=1.5), graph(), dry=True)
+    assert (low["stops"], low["taste_weight"], low["new_artist_share"]) == (2, 2.0, 0)
+    assert (high["stops"], high["taste_weight"], high["new_artist_share"]) == (5, 0.7, 1)
+    assert mine["plan"]["stops"] == 3 and mine["plan"]["taste_weight"] == 1.5
+    assert set(mine["plan"]["explicit"]) == {"stops", "taste_weight"} and len(mine["path"]) <= 3
+    assert {"min_link_weight", "min_genre_weight", "radius", "half_life_days", "warnings"} <= set(low)
 
 
 def test_flow_dry_previews_the_path_without_fetching_tracks():

@@ -71,6 +71,7 @@ class Playlist:
     profile: list[dict[str, Any]] | None = None  # flow: [{"genre", "share"}] the listener's genres
     familiarity: float | None = None  # flow: mean own-genre share along the path (1 = all yours)
     flow_score: float | None = None  # flow: mean genre closeness of neighbouring tracks
+    plan: dict[str, Any] | None = None  # flow: every value the path used (explore-derived or explicit) + warnings
     stats: dict[str, Any] = field(default_factory=dict)  # candidates, graph_size, mode, mix, unheard, input ...
     result_id: str | None = None  # set only when kept (keep=True)
     created_at: str | None = None
@@ -158,6 +159,7 @@ class FlowPreview:
     profile: list[dict[str, Any]]
     nearby: list[dict[str, Any]]
     input: dict[str, Any] | None = None  # see INPUT
+    plan: dict[str, Any] | None = None  # every value the path used + warnings (as Playlist.plan)
     dry: bool = True
 
     def to_dict(self) -> dict[str, Any]:

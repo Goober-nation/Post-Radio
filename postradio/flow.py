@@ -2,8 +2,9 @@
 each stop filled with familiar and new artists, ordered so neighbouring tracks share genres. No network; the
 engine (Radio.flow) fetches artists and tracks and calls these.
 
-explore (0..1) decides how far the path may leave the user's own genres and how many of each stop's tracks come
-from artists the user doesn't know. Ported from Post-Radio-Webpage's app/flow.py (genre-graph branch)."""
+explore (0..1) sets, through straight lines between configured end values: how many stops the path has, how
+strongly taste steers each step (taste_weight), and how many of each stop's tracks come from artists the user
+doesn't know. Ported from Post-Radio-Webpage's app/flow.py (genre-graph branch)."""
 import heapq
 import math
 import random
@@ -18,12 +19,8 @@ from .models import Track
 
 @dataclass(frozen=True)
 class PlannerConfig:
-    destination_from: float = 0.3  # below this explore, the path only walks the user's own genres
-    destination_width: float = 0.2  # how tightly the destination's closeness must match what explore asks
-    destination_reach: float = 0.6  # wanted closeness of the destination = 1 - reach × explore
-    own_share_max: float = 0.15  # a destination is a genre the user has less than this share of
     candidates: int = 4  # each step picks among this many strongest neighbours
-    hub_damping: float = 0.7  # at high explore, very close genres pull less (they're "more of the same")
+    floor: float = 0.05  # pull of a genre outside the listener's spread, so the walk can still cross it
 
 
 @dataclass
@@ -93,80 +90,72 @@ def taste_profile(weights: dict[str, float], genres_by_source: list[tuple[dict[s
 
 
 # ---------------------------------------------------------------- path
-def plan_path(spread: list[GenreScore], adj: Adjacency, explore: float, stops: int = 5,
-              rng: random.Random | None = None, roots: dict[str, tuple[str, ...]] | None = None,
-              cfg: PlannerConfig | None = None, start: str | None = None) -> list[str]:
-    """Genre stops, each one graph edge from the last (or, at a dead end, a jump), starting at one of the user's
-    strongest genres. Two measures per genre, both 0..1: f = the user's own share (hop 0, relative to their top
-    genre; 0 for genres they don't have) and r = spread score (how close it is to their taste at all). A step's
-    pull is edge weight × ((1-explore)·f + explore·r·(1-0.7·explore·r)·(1-f)): explore 0 tours only the user's own
-    genres; higher explore favours genres they have little of. From explore `destination_from` the path first
-    routes to a destination outside the start genre's family (see destination()) and then keeps away from that
-    family: fully at explore 1, partly in between. No revisits. `start` fixes the first stop (any genre in the
-    graph, the listener's or not); the walk then follows the same rules from there."""
+def interp(lo_hi: tuple[float, float], explore: float) -> float:
+    """The value at `explore` on the straight line from lo_hi[0] (explore 0) to lo_hi[1] (explore 1)."""
+    lo, hi = lo_hi
+    return lo + (hi - lo) * explore
+
+
+def within(adj: Adjacency, start: str, radius: int) -> dict[str, int]:
+    """Genres at most `radius` links from start -> their distance (BFS)."""
+    dist, frontier = {start: 0}, [start]
+    for d in range(1, radius + 1):
+        nxt = []
+        for g in frontier:
+            for n in adj.get(g, {}):
+                if n not in dist:
+                    dist[n] = d
+                    nxt.append(n)
+        frontier = nxt
+    return dist
+
+
+def plan_path(spread: list[GenreScore], adj: Adjacency, stops: int = 5, taste_weight: float = 1.0,
+              rng: random.Random | None = None, start: str | None = None, radius: int = 0,
+              cfg: PlannerConfig | None = None, warnings: list[str] | None = None) -> list[str]:
+    """Genre stops as a walk over the genre graph. It starts at `start`, or at one of the listener's three
+    strongest genres. Each step goes to a linked, unvisited genre, picked (weighted, among the `candidates`
+    best) by link weight × pull ** taste_weight, where pull is the genre's closeness to the listener's taste
+    (spread score relative to the best, `floor` for genres outside the spread). taste_weight 0 follows link
+    strength only; higher keeps the walk on the listener's genres. With radius > 0 every stop stays within that
+    many links of the start. A walk that gets stuck routes through the graph to the best reachable unvisited
+    genre (the stops in between count); if nothing is reachable the path ends early and a warning is added."""
     rng, cfg = rng or random.Random(), cfg or PlannerConfig()
     if not spread or stops < 1:
         return []
     top_r = max(s.score for s in spread) or 1.0
-    top_f = max((s.score for s in spread if s.hop == 0), default=top_r) or 1.0
-    f = {s.genre: s.score / top_f if s.hop == 0 else 0.0 for s in spread}
     r = {s.genre: s.score / top_r for s in spread}
-    own = sorted((g for g in f if f[g] > 0), key=lambda g: (-f[g], g))
+    own = sorted((s for s in spread if s.hop == 0), key=lambda s: (-s.score, s.genre))[:3]
 
     def pull(g: str) -> float:
-        rg = r.get(g, 0.0)
-        return (1 - explore) * f.get(g, 0.0) + explore * rg * (1 - cfg.hub_damping * explore * rg) * (1 - f.get(g, 0.0))
+        return max(r.get(g, 0.0), cfg.floor) ** taste_weight
 
     if start is not None:
         path = [start]
+    elif own:
+        path = [rng.choices([s.genre for s in own], weights=[s.score for s in own])[0]]
     else:
-        path = [rng.choices(own[:3], weights=[f[g] for g in own[:3]])[0]] if own else [spread[0].genre]
-    home = set((roots or {}).get(path[0], ())) | {path[0]}
-    away = False  # once at the destination, the start genre's family is damped by (1 - explore)
-    if explore >= cfg.destination_from and stops > 1:
-        dest = destination(path[0], f, r, explore, rng, roots, cfg)
-        route = route_between(adj, path[0], dest) if dest else None
-        if route:
-            path, away = fit(route, stops), True
-
-    def damp(g: str) -> float:
-        return 1 - explore if away and roots and home & set(roots.get(g, (g,))) else 1.0
-
+        path = [spread[0].genre]
+    allowed = within(adj, path[0], radius) if radius > 0 else None
+    ok = (lambda g: g in allowed) if allowed is not None else (lambda g: True)
     while len(path) < stops:
-        nb = {n: w * pull(n) * damp(n) for n, w in adj.get(path[-1], {}).items()
-              if n not in path and pull(n) * damp(n) > 0}
+        nb = {n: w * pull(n) for n, w in adj.get(path[-1], {}).items() if n not in path and ok(n) and w > 0}
         if nb:
             best = sorted(nb.items(), key=lambda kv: (-kv[1], kv[0]))[:cfg.candidates]
             path.append(rng.choices([g for g, _ in best], weights=[w for _, w in best])[0])
-        else:
-            rest = sorted((g for g in r if g not in path and pull(g) * damp(g) > 0),
-                          key=lambda g: (-pull(g) * damp(g), g))
-            if not rest:
-                break
-            path.append(rest[0])
+            continue
+        reach = within(adj, path[-1], len(adj))  # every genre reachable from here
+        targets = sorted((g for g in reach if g not in path and ok(g)), key=lambda g: (-pull(g), reach[g], g))
+        route = route_between(adj, path[-1], targets[0]) if targets else None
+        if not route:
+            if warnings is not None:
+                warnings.append(f"path ended after {len(path)} of {stops} stops: no unvisited genre reachable "
+                                f"from {path[-1]}")
+            break
+        if warnings is not None:
+            warnings.append(f"stuck at {path[-1]}: routed through the graph to {targets[0]}")
+        path += [g for g in route[1:] if g not in path and ok(g)][: stops - len(path)]
     return path
-
-
-def destination(start: str, f: dict[str, float], r: dict[str, float], explore: float, rng: random.Random,
-                roots: dict[str, tuple[str, ...]] | None, cfg: PlannerConfig | None = None) -> str | None:
-    """Where a more adventurous path heads: a genre the user has little of, outside the start genre's family (no
-    shared Wikidata root) when roots are known, and about as close to their taste as explore asks: closeness near
-    1 - reach × explore (0.7 at explore 0.5, 0.4 at 1 by default). Closeness is relative to the closest eligible
-    genre, not to the user's top genre: with a broad profile every outside genre has a low raw score, and an
-    absolute target would then pick the same nearest genre at every explore. One of the best three, at random."""
-    cfg = cfg or PlannerConfig()
-    want = 1 - cfg.destination_reach * explore
-    fam = set((roots or {}).get(start, ())) | {start}
-
-    def ok(g: str) -> bool:
-        return g != start and f.get(g, 0) < cfg.own_share_max and not (roots and fam & set(roots.get(g, (g,))))
-
-    eligible = [g for g in r if ok(g)]
-    top = max((r[g] for g in eligible), default=0.0) or 1.0
-    scored = sorted(((r[g] / top * (1 - f.get(g, 0)) * math.exp(-((r[g] / top - want) / cfg.destination_width) ** 2),
-                      g) for g in eligible), key=lambda x: (-x[0], x[1]))[:3]
-    scored = [(w, g) for w, g in scored if w > 0]
-    return rng.choices([g for _, g in scored], weights=[w for w, _ in scored])[0] if scored else None
 
 
 def route_between(adj: Adjacency, a: str, b: str) -> list[str] | None:

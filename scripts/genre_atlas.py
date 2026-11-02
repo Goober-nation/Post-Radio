@@ -32,13 +32,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from postradio import flow as flow_mod  # noqa: E402
 from postradio.api import Listener, Recommender  # noqa: E402
+from postradio.engine import Params, Providers, Radio  # noqa: E402
 from postradio.genres import GRAPH_FILE, PACKAGED_GRAPH, WEIGHTS_FILE, pair, yandex_edges  # noqa: E402
 from postradio.providers import yandex as ymod  # noqa: E402
 from postradio.providers.yandex import genre_table  # noqa: E402
 
 EXPLORES = (0.0, 0.25, 0.5, 0.75, 1.0)
 SEEDS = (1, 2, 3, 4, 5, 6)
-REAL_STOPS = 5
 KINDS = ("subgenre_of", "influenced_by", "yandex_parent", "cotag", "similar", "cotag+similar")
 
 
@@ -227,25 +227,28 @@ def build(home: str, export: str | None) -> dict:
         tp = layout(len(taste_ids), [(loc[i], loc[j], w) for i, j, w in tedges], seed=11, width=1400.0)
         tpos = [[round(float(tp[i, 0]), 1), round(float(tp[i, 1]), 1)] for i in range(len(taste_ids))]
 
-    cfg = flow_mod.PlannerConfig(destination_from=a.flow_destination_from, destination_width=a.flow_destination_width,
-                                 destination_reach=a.flow_destination_reach)
-    roots = {g: n.roots for g, n in graph.nodes.items()}
-    def real_paths(sp) -> dict:
+    pc = flow_mod.PlannerConfig()
+    engine = Radio(Providers(resolver=None, similar=[], tracks=[]), a)  # only for flow_plan: no network
+
+    def real_paths(sp, prof) -> dict:
+        """Paths planned by Post-Radio's own code, with the values explore gives (Radio.flow_plan)."""
         out = {}
         for ex in EXPLORES:
+            plan, adj = engine.flow_plan(Params(explore=ex, adv=a), graph, prof)
             out[f"{ex:.2f}"] = []
             for seed in SEEDS:
                 rng = random.Random(seed)  # as Radio.flow: the planner gets its own Random drawn from the seed's
-                path = flow_mod.plan_path(sp, graph.adj, ex, REAL_STOPS, random.Random(rng.random()), roots, cfg)
+                path = flow_mod.plan_path(sp, adj, plan["stops"], plan["taste_weight"], random.Random(rng.random()),
+                                          radius=plan["radius"], cfg=pc)
                 out[f"{ex:.2f}"].append([idx[g] for g in path])
         return out
 
-    real = real_paths(spread) if spread else {}
+    real = real_paths(spread, profile) if spread else {}
     packed = {}
     for hl, prof in variants.items():
         sp = graph.spread(prof, a.genre_spread_hops, a.genre_spread_decay)
         packed[str(hl)] = {"profile": [[idx[g], v] for g, v in prof.items()],
-                           "spread": [[idx[x.genre], x.score, x.hop] for x in sp], "real": real_paths(sp)}
+                           "spread": [[idx[x.genre], x.score, x.hop] for x in sp], "real": real_paths(sp, prof)}
     return {
         "meta": {"nodes": len(names), "edges": n_edges, "learned": graph.learned, "taste": bool(profile),
                  "taste_nodes": len(taste_ids), "taste_edges": len(tedges), "input": nearby_input,
@@ -261,8 +264,10 @@ def build(home: str, export: str | None) -> dict:
         "tpos": tpos,
         "profile": [[idx[g], s] for g, s in profile.items()],
         "spread": [[idx[s.genre], s.score, s.hop] for s in spread],
-        "cfg": dataclasses.asdict(cfg),
-        "real": real, "explores": list(EXPLORES), "seeds": list(SEEDS), "realStops": REAL_STOPS,
+        "cfg": {"stops": list(a.flow_stops), "taste_weight": list(a.flow_taste_weight),
+                "min_link_weight": list(a.flow_min_link_weight), "min_genre_weight": a.flow_min_genre_weight,
+                "radius": a.flow_radius, "candidates": pc.candidates, "floor": pc.floor},
+        "real": real, "explores": list(EXPLORES), "seeds": list(SEEDS),
         "spreadParams": {"hops": a.genre_spread_hops, "decay": a.genre_spread_decay},
         "variants": packed, "halfLives": sorted(variants, key=lambda h: h or 10**9), "hlDefault": hl_default,
     }
@@ -360,6 +365,9 @@ button:hover{border-color:var(--muted)}
 .res{font-size:12px;margin-top:6px}.res .m{color:var(--muted)}
 .pl{margin:3px 0;font-size:12px}.pl i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px}
 .hide{display:none!important}
+.adv{border:1px solid var(--line);border-radius:8px;padding:6px 8px;margin-top:8px}
+.tag{font-size:11px;color:var(--muted);border:1px solid var(--line);border-radius:8px;padding:0 5px}
+.tag.set{color:var(--accent);border-color:var(--accent)}
 .dual{position:relative;height:26px}
 .dual input{position:absolute;left:0;top:4px;width:100%;margin:0;background:none;pointer-events:none;-webkit-appearance:none;appearance:none}
 .dual input::-webkit-slider-runnable-track{height:4px;background:var(--line);border-radius:2px}
@@ -402,31 +410,33 @@ button:hover{border-color:var(--muted)}
     <details open id="flowBox"><summary>Flow preview</summary>
       <p class="sub" id="flowNote">Simulates flow mode's genre path (JS port of plan_path).</p>
       <div id="flowCtl">
-        <label class="f">Explore: <b id="exv">0.50</b></label>
+        <label class="f">Explore: <b id="exv">0.50</b> <span class="m">(sets the values below until you change them)</span></label>
         <input type="range" id="ex" min="0" max="1" step="0.05" value="0.5">
-        <div class="row"><div><label class="f">Stops</label><input type="number" id="stops" min="1" max="15" value="5"></div>
-          <div><label class="f">Seed</label><input type="number" id="seed" min="0" value="1"></div>
+        <div class="row"><div><label class="f">Seed</label><input type="number" id="seed" min="0" value="1"></div>
           <button id="reroll" title="New random seed">Reroll</button></div>
         <div class="rel"><label class="f" for="start">Start genre (optional)</label><input type="text" id="start" autocomplete="off" placeholder="listener's own genre by default"><div class="ac" id="sac"></div></div>
-        <label class="f">Taste weight: <b id="twv">1.0</b> <span class="m">(0 = follow link strength only, 1 = flow as built, 2 = taste-heavy)</span></label>
-        <input type="range" id="tw" min="0" max="2" step="0.1" value="1">
-        <label class="f">Stay within <input type="number" id="rad" min="0" max="6" value="0" style="width:60px;display:inline-block"> links of the start (0 = off: normal flow)</label>
-        <div class="res m" id="radOut"></div>
+        <div class="adv">
+          <div class="row"><b class="f">Set by explore</b><button id="reset" title="Let explore set every value again">Reset</button></div>
+          <label class="f">Stops: <b id="stopsv"></b> <span class="tag" id="stopsT"></span></label>
+          <input type="range" id="stops" min="1" max="12" step="1" value="5">
+          <label class="f">Taste weight: <b id="twv"></b> <span class="tag" id="twT"></span> <span class="m">(0 = link strength only)</span></label>
+          <input type="range" id="tw" min="0" max="3" step="0.05" value="1">
+          <label class="f">Min link weight: <b id="thv"></b> <span class="tag" id="thT"></span> <span class="m" id="thn"></span></label>
+          <input type="range" id="th" min="0" max="0.5" step="0.01" value="0">
+          <label class="f" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="tie"> tie min link weight to explore:
+            <input type="number" id="tl0" min="0" max="0.5" step="0.01" style="width:64px"> at 0 &rarr; <input type="number" id="tl1" min="0" max="0.5" step="0.01" style="width:64px"> at 1</label>
+          <label class="f">Min genre weight: <b id="nwv"></b> <span class="tag" id="nwT"></span> <span class="m" id="nwn"></span></label>
+          <input type="range" id="nw" min="0" max="0.8" step="0.01" value="0">
+          <p class="sub">Genres below it are hidden and left out of routes and the walk. Weight: your genres &radic;(share &divide; top share), others log(1 + links) &divide; log(1 + most links).</p>
+          <label class="f">Radius: <b id="radv"></b> <span class="tag" id="radT"></span> <span class="m">(0 = off; else every stop within N links of the start)</span></label>
+          <input type="range" id="rad" min="0" max="4" step="1" value="0">
+        </div>
+        <div class="res" id="planOut"></div>
         <label class="f" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="showSim" checked> Show simulated path</label>
         <label class="f" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="showReal"> Show precomputed real paths (all 6 seeds)</label>
         <div class="res" id="simOut"></div>
         <div class="res" id="realOut"></div>
       </div>
-    </details>
-    <details open><summary>Link strength</summary>
-      <p class="sub">Links outside this range are ignored by routes, the flow preview and the drawing. (Your taste spread and the real paths were computed on the full graph.)</p>
-      <label class="f">Weight <b id="thv">0.00 – 1.00</b> <span class="m" id="thn"></span></label>
-      <div class="dual"><input type="range" id="thLo" min="0" max="1" step="0.01" value="0"><input type="range" id="thHi" min="0" max="1" step="0.01" value="1"></div>
-    </details>
-    <details open><summary>Show genres by weight</summary>
-      <p class="sub">Hides genres outside the range; hidden genres are also left out of routes and the flow preview. Weight: your genres = &radic;(share &divide; top share); other genres = log(1 + links) &divide; log(1 + most links).</p>
-      <label class="f">Weight <b id="nwv">0.00 – 1.00</b> <span class="m" id="nwn"></span></label>
-      <div class="dual"><input type="range" id="nwLo" min="0" max="1" step="0.01" value="0"><input type="range" id="nwHi" min="0" max="1" step="0.01" value="1"></div>
     </details>
     <details open><summary>Dot size</summary>
       <p class="sub">Your genres: by taste share. Other genres: by number of links (in Blend, plus closeness to your taste). Both grow with zoom.</p>
@@ -485,7 +495,7 @@ const ea = new Int32Array(nE), eb = new Int32Array(nE), ew = new Float32Array(nE
 E.forEach((e, i) => { ea[i] = e[0]; eb[i] = e[1]; ew[i] = e[2]; ek[i] = e[3]; });
 
 // ---- taste
-const share = new Float32Array(N), inTaste = new Uint8Array(N);
+const share = new Float64Array(N), inTaste = new Uint8Array(N);
 D.profile.forEach(([i, s]) => { share[i] = s; inTaste[i] = 1; });
 let topShare = Math.max(...D.profile.map((p) => p[1]), 1e-9);
 const spreadScore = new Float32Array(N), spreadHop = new Int8Array(N).fill(-1);
@@ -552,7 +562,7 @@ function pyRound(x) { // python round(): half to even
 const rootsOf = (g) => D.roots[g]; // null: not a Wikidata genre (python's roots.get(g, default))
 const rootSet = (g, dflt) => new Set((rootsOf(g) || dflt).map ? (rootsOf(g) || dflt) : []);
 const intersects = (a, b) => { for (const x of a) if (b.has(x)) return true; return false; };
-const CFG = D.cfg, CAND = 4, HUB = 0.7, OWN_MAX = 0.15; // PlannerConfig defaults: candidates, hub_damping, own_share_max
+const CFG = D.cfg; // python's flow settings: explore curves, minimums, radius, planner candidates and floor
 // roots entries are root-name ids; a genre's own id is used as its "family" when it has no roots entry
 const famOf = (g) => new Set(D.roots[g] ? D.roots[g].map((r) => "r" + r) : ["g" + g]);
 const famWithSelf = (g) => { const s = new Set(D.roots[g] ? D.roots[g].map((r) => "r" + r) : []); s.add("g" + g); return s; };
@@ -590,101 +600,69 @@ function choices(items, weights, rnd) {
   for (let i = 0; i < items.length; i++) { acc += weights[i]; if (x < acc) return items[i]; }
   return items[items.length - 1];
 }
-function destination(start, explore, pick) {
-  const { f, r } = SP, want = 1 - CFG.destination_reach * explore, fam = canon(famWithSelf(start));
-  const ok = (g) => g !== start && (f.get(g) || 0) < OWN_MAX && !intersects(fam, canon(famOf(g)));
-  const el = [...r.keys()].filter((g) => nodeOk(g) && ok(g));
-  const top = Math.max(0, ...el.map((g) => r.get(g))) || 1;
-  const sc = el.map((g) => [r.get(g) / top * (1 - (f.get(g) || 0)) *
-    Math.exp(-(((r.get(g) / top - want) / CFG.destination_width) ** 2)), g])
-    .sort((x, y) => (y[0] - x[0]) || cmpName(x[1], y[1])).slice(0, 3).filter(([w]) => w > 0);
-  return sc.length ? pick("dest", sc.map((s) => s[1]), sc.map((s) => s[0])) : null;
-}
-// pick(kind, items, weights, ctx) -> item. Live runs sample with a seeded PRNG; verification forces python's choices.
+// ---- port of postradio.flow.plan_path (the walk) and Radio.flow_plan (explore -> values)
 function hopsFrom(a, R) { // BFS distance (in links) from a, up to R
   const d = new Map([[a, 0]]); let fr = [a];
   for (let h = 1; h <= R && fr.length; h++) { const nx = [];
-    for (const g of fr) for (const n of adj[g].keys()) if (!d.has(n)) { d.set(n, h); nx.push(n); }
+    for (const g of fr) for (const n of (adj[g] || new Map()).keys()) if (!d.has(n)) { d.set(n, h); nx.push(n); }
     fr = nx; }
   return d;
 }
-// radius > 0: local walk. Every stop stays within `radius` links of the start (no destination routing); the walk
-// takes the strongest pull among in-radius neighbours, and at a dead end jumps to the best unvisited in-radius genre,
-// so it reaches `stops` stops whenever the radius holds that many genres. Genres outside the taste still get a small
-// pull (LOCAL_EPS) so a start outside the profile can walk.
-const LOCAL_EPS = 0.05;
-// taste weight: a step scores link weight × pull ^ TW (1 = python's flow, 0 = link strength only, 2 = taste-heavy)
-let TW = 1;
-function planPath(explore, stops, pick, start, radius) {
-  const { f, r, first } = SP;
-  const own = SP.own.filter((g) => nodeOk(g));
+const interp = (lohi, e) => lohi[0] + (lohi[1] - lohi[0]) * e;
+const round3 = (x) => Math.round(x * 1000) / 1000;
+// pick(kind, items, weights, ctx) -> item. Live runs sample with a seeded PRNG; verification forces python's choices.
+function planPath(stops, tw, pick, start, radius, warnings) {
+  const { r } = SP, floor = CFG.floor, cand = CFG.candidates;
   if (!r.size || stops < 1) return [];
-  const pull = (g) => { const rg = r.get(g) || 0, fg = f.get(g) || 0;
-    return (1 - explore) * fg + explore * rg * (1 - HUB * explore * rg) * (1 - fg); };
+  const pull = (g) => Math.pow(Math.max(r.get(g) || 0, floor), tw);
+  const own = D.spread.filter((s) => s[2] === 0).sort((x, y) => (y[1] - x[1]) || cmpName(x[0], y[0])).slice(0, 3);
   let path;
   if (start !== null && start !== undefined) path = [start];
-  else if (own.length) { const t = own.slice(0, 3); path = [pick("start", t, t.map((g) => f.get(g)), { path: [] })]; }
-  else path = [first];
-  const home = canon(famWithSelf(path[0]).size ? new Set([...(D.roots[path[0]] || []).map((x) => "r" + x), "g" + path[0]]) : new Set());
-  let away = false;
-  if (radius > 0) {
-    const near = hopsFrom(path[0], radius);
-    const lp = (g) => Math.pow(pull(g) + LOCAL_EPS, TW);
-    while (path.length < stops) {
-      const last = path[path.length - 1], nb = [];
-      for (const [n, w] of adj[last]) if (near.has(n) && !path.includes(n)) nb.push([n, w * lp(n)]);
-      if (nb.length) {
-        const best = nb.sort((x, y) => (y[1] - x[1]) || cmpName(x[0], y[0])).slice(0, CAND);
-        path.push(pick("step", best.map((b) => b[0]), best.map((b) => b[1]), { path }));
-      } else {
-        const rest = [...near.keys()].filter((g) => !path.includes(g)).sort((a, b) => (lp(b) - lp(a)) || cmpName(a, b));
-        if (!rest.length) break;
-        path.push(rest[0]);
-      }
-    }
-    path.local = { radius, inRadius: near.size };
-    return path;
-  }
-  if (explore >= CFG.destination_from && stops > 1) {
-    const dest = destination(path[0], explore, (k, it, w) => pick(k, it, w, { path, start: path[0] }));
-    const route = dest !== null ? routeBetween(path[0], dest) : null;
-    if (route) { path = fit(route, stops); away = true; }
-  }
-  const damp = (g) => (away && intersects(home, canon(famOf(g))) ? 1 - explore : 1);
+  else if (own.length) path = [pick("start", own.map((s) => s[0]), own.map((s) => s[1]), { path: [] })];
+  else path = [D.spread[0][0]];
+  const allowed = radius > 0 ? hopsFrom(path[0], radius) : null;
+  const ok = (g) => !allowed || allowed.has(g);
   while (path.length < stops) {
     const last = path[path.length - 1], nb = [];
-    for (const [n, w] of adj[last]) { if (path.includes(n)) continue; const pd = pull(n) * damp(n);
-      if (TW === 1) { if (pd > 0) nb.push([n, w * pd]); } // exactly python's rule
-      else if (TW === 0 || pd > 0) nb.push([n, w * Math.pow(pd || 0, TW)]); }
+    for (const [n, w] of adj[last] || []) if (!path.includes(n) && ok(n) && w > 0) nb.push([n, w * pull(n)]);
     if (nb.length) {
-      const best = nb.sort((x, y) => (y[1] - x[1]) || cmpName(x[0], y[0])).slice(0, CAND);
+      const best = nb.sort((x, y) => (y[1] - x[1]) || cmpName(x[0], y[0])).slice(0, cand);
       path.push(pick("step", best.map((b) => b[0]), best.map((b) => b[1]), { path }));
-    } else {
-      const rest = [...r.keys()].filter((g) => nodeOk(g) && !path.includes(g) && pull(g) * damp(g) > 0)
-        .sort((a, b) => (pull(b) * damp(b) - pull(a) * damp(a)) || cmpName(a, b));
-      if (!rest.length) break;
-      path.push(rest[0]);
+      continue;
     }
+    const reach = hopsFrom(last, N);
+    const targets = [...reach.keys()].filter((g) => !path.includes(g) && ok(g))
+      .sort((a, b) => (pull(b) - pull(a)) || (reach.get(a) - reach.get(b)) || cmpName(a, b));
+    const route = targets.length ? routeBetween(last, targets[0]) : null;
+    if (!route) { warnings && warnings.push(`path ended after ${path.length} of ${stops} stops: nothing reachable from ${labels[last]}`); break; }
+    warnings && warnings.push(`stuck at ${labels[last]}: routed through the graph to ${labels[targets[0]]}`);
+    for (const g of route.slice(1)) if (!path.includes(g) && ok(g) && path.length < stops) path.push(g);
   }
   return path;
 }
-function simulate(explore, stops, seed, start, radius) {
+// the values a flow runs with: explore-derived unless the page sets them (S.over), as Radio.flow_plan
+function flowPlan() {
+  const e = +$("#ex").value, ov = S.over || {}, explicit = [];
+  const val = (k, derived) => { if (ov[k] !== undefined) { explicit.push(k); return ov[k]; } return derived; };
+  const linkCurve = S.tieLink ? [+$("#tl0").value, +$("#tl1").value] : CFG.min_link_weight;
+  return {
+    explore: e, stops: val("stops", Math.round(interp(CFG.stops, e))), taste_weight: val("taste_weight", round3(interp(CFG.taste_weight, e))),
+    min_link_weight: val("min_link_weight", round3(interp(linkCurve, e))), min_genre_weight: val("min_genre_weight", CFG.min_genre_weight),
+    radius: val("radius", CFG.radius), new_artist_share: e, half_life_days: HL, explicit, warnings: [],
+  };
+}
+function simulate(plan, seed, start) {
   const rnd = mulberry32(seed >>> 0);
-  if (start !== undefined && start !== null && !nodeOk(start)) return [];
-  return planPath(explore, stops, (k, items, w) => choices(items, w, rnd), start, radius || 0);
+  return planPath(plan.stops, plan.taste_weight, (k, items, w) => choices(items, w, rnd), start, plan.radius, plan.warnings);
 }
 // Replay a python path through the port with every random choice forced to python's: true when the port's rules can
 // produce exactly that path (each pick was among the candidates the port offers, each deterministic step matches).
-function verifyPath(path, explore, stops) {
+function verifyPath(path, plan) {
   const why = [];
-  const out = planPath(explore, stops, (kind, items, w, ctx) => {
-    if (kind === "start") { if (items.includes(path[0])) return path[0]; why.push("start not in top-3 own"); return items[0]; }
-    if (kind === "step") { const want = path[ctx.path.length];
-      if (items.includes(want)) return want; why.push("step " + ctx.path.length + " not a candidate"); return items[0]; }
-    for (const g of items) { const rt = routeBetween(ctx.start, g);
-      if (rt) { const ft = fit(rt, stops); if (ft.every((x, i) => path[i] === x)) return g; } }
-    why.push("no destination reproduces the route"); return items[0];
-  }, undefined);
+  const out = planPath(plan.stops, plan.taste_weight, (kind, items, w, ctx) => {
+    const want = kind === "start" ? path[0] : path[ctx.path.length];
+    if (items.includes(want)) return want; why.push(kind + " " + ctx.path.length + " not a candidate"); return items[0];
+  }, undefined, plan.radius, null);
   const same = out.length === path.length && out.every((g, i) => g === path[i]);
   return { ok: same && !why.length, why, out };
 }
@@ -694,7 +672,7 @@ const cv = $("#cv"), ctx = cv.getContext("2d");
 let W = 0, H = 0, DPR = 1;
 const view = { x: 0, y: 0, k: 1 };
 let fitK = 1;
-const S = { mode: HAS_TASTE ? "blend" : "data", hover: -1, sel: -1, from: -1, to: -1, route: null, sim: null,
+const S = { over: {}, tieLink: false, plan: null, mode: HAS_TASTE ? "blend" : "data", hover: -1, sel: -1, from: -1, to: -1, route: null, sim: null,
   showSim: true, showReal: false, tip: null };
 const C = {};
 function readColors() {
@@ -766,7 +744,7 @@ let SZ_T = 1, SZ_O = 1;
 let NW_LO = 0, NW_HI = 1;
 const maxDeg0 = Math.max(...D.nb.map((l) => l.length), 1);
 const nodeW = (g) => (S.mode !== "data" && inTaste[g] ? Math.sqrt(share[g] / topShare) : Math.log1p(D.nb[g].length) / Math.log1p(maxDeg0));
-const shown = (g) => { const w = nodeW(g); return w >= NW_LO - 1e-9 && w <= NW_HI + 1e-9; };
+const shown = (g) => nodeW(g) >= NW_LO - 1e-9; // a minimum only (the upper bound went unused)
 nodeOk = shown;
 function nodeR(g) {
   const z = Math.min(Math.max(Math.sqrt(zoomRel()), 0.75), 4.5);
@@ -960,7 +938,7 @@ function draw() {
   const zr = zoomRel();
   const [ka, kt] = keptEdges();
   $("#status").textContent = `${S.mode === "taste" ? tasteIds.length : N} genres, ${S.mode === "taste" ? kt : ka} links` +
-    `${TH > 0 || TH_HI < 1 ? ` (weight ${TH.toFixed(2)}–${TH_HI.toFixed(2)})` : ""} · zoom ${zr.toFixed(1)}x`;
+    `${TH > 0 ? ` (weight ≥ ${TH.toFixed(2)})` : ""} · zoom ${zr.toFixed(1)}x`;
 }
 
 // ---- interaction
@@ -1068,31 +1046,25 @@ function saveHash() {
   const add = (k, v) => q.push(k + "=" + encodeURIComponent(v));
   if (S.from >= 0) add("from", names[S.from]); if (S.to >= 0) add("to", names[S.to]);
   if (S.start !== undefined) add("start", names[S.start]);
-  add("mode", S.mode); add("ex", $("#ex").value); add("stops", $("#stops").value); add("seed", $("#seed").value);
+  add("mode", S.mode); add("ex", $("#ex").value); add("seed", $("#seed").value);
   if (S.showReal) add("real", 1);
-  if (+$("#rad").value > 0) add("rad", $("#rad").value);
-  if (TW !== 1) add("tw", TW);
-  if (TH > 0) add("th", TH.toFixed(2)); if (TH_HI < 1) add("thhi", TH_HI.toFixed(2));
+  for (const [k, v] of Object.entries(S.over)) add("o_" + k, v); // values set by hand (explore sets the rest)
+  if (S.tieLink) { add("tie", 1); add("tl0", $("#tl0").value); add("tl1", $("#tl1").value); }
   if (HAS_TASTE && HL !== D.hlDefault) add("hl", HL);
   if (SZ_T !== 1) add("szt", SZ_T); if (SZ_O !== 1) add("szo", SZ_O);
-  if (NW_LO > 0) add("nwlo", NW_LO); if (NW_HI < 1) add("nwhi", NW_HI);
   try { history.replaceState(null, "", "#" + q.join("&")); } catch (e) { /* sandboxed */ }
 }
 function loadHash() {
   const h = new URLSearchParams(location.hash.slice(1)), g = (k) => (h.has(k) && idx.has(h.get(k)) ? idx.get(h.get(k)) : -1);
-  if (h.get("ex")) $("#ex").value = h.get("ex"); if (h.get("stops")) $("#stops").value = h.get("stops");
+  if (h.get("ex")) $("#ex").value = h.get("ex");
+  for (const k of Object.keys(OV)) if (h.has("o_" + k) && h.get("o_" + k) !== "") S.over[k] = +h.get("o_" + k);
+  if (h.get("tie")) { S.tieLink = true; $("#tie").checked = true; $("#tl0").value = h.get("tl0"); $("#tl1").value = h.get("tl1"); }
   if (h.get("seed")) $("#seed").value = h.get("seed");
   const m = h.get("mode"); if (["taste", "data", "blend"].includes(m) && (HAS_TASTE || m === "data")) S.mode = m;
   if (g("from") >= 0) { S.from = g("from"); $("#from").value = labels[S.from]; }
   if (g("to") >= 0) { S.to = g("to"); $("#to").value = labels[S.to]; }
   if (g("start") >= 0) { S.start = g("start"); $("#start").value = labels[S.start]; }
-  if (h.get("rad")) $("#rad").value = h.get("rad");
-  if (h.get("tw")) { TW = Math.min(Math.max(+h.get("tw"), 0), 2); $("#tw").value = TW; $("#twv").textContent = TW.toFixed(1); }
-  if (h.get("th")) { TH = Math.min(Math.max(+h.get("th") || 0, 0), 1); $("#thLo").value = TH; }
-  if (h.get("thhi")) { TH_HI = Math.min(Math.max(+h.get("thhi") || 1, TH), 1); $("#thHi").value = TH_HI; }
   applyTh();
-  if (h.get("nwlo")) { NW_LO = Math.min(Math.max(+h.get("nwlo") || 0, 0), 1); $("#nwLo").value = NW_LO; }
-  if (h.get("nwhi")) { NW_HI = Math.min(Math.max(+h.get("nwhi") || 1, 0), 1); $("#nwHi").value = NW_HI; }
   for (const [k, id] of [["szt", "szT"], ["szo", "szO"]]) if (h.get(k)) { const v = Math.min(Math.max(+h.get(k) || 1, 0.2), 3);
     $("#" + id).value = v; if (k === "szt") SZ_T = v; else SZ_O = v; $("#" + id + "v").textContent = v.toFixed(1); }
   if (h.get("real")) { S.showReal = true; $("#showReal").checked = true; }
@@ -1177,45 +1149,46 @@ const realKey = () => { const ex = +$("#ex").value; let b = D.explores[0];
 function chips(path) {
   return '<div class="chips">' + path.map((g, i) => (i ? '<span class="arrow">&rarr;</span>' : "") + `<span class="chip">${esc(labels[g])}</span>`).join("") + "</div>";
 }
+const OV = { stops: "stops", taste_weight: "tw", min_link_weight: "th", min_genre_weight: "nw", radius: "rad" };
+function syncControls(plan) { // show the plan's values on the controls; mark which ones the user set
+  const fmt = { stops: (v) => String(v), taste_weight: (v) => v.toFixed(2), min_link_weight: (v) => v.toFixed(2),
+    min_genre_weight: (v) => v.toFixed(2), radius: (v) => (v ? String(v) : "off") };
+  for (const [k, id] of Object.entries(OV)) {
+    $("#" + id).value = plan[k]; $("#" + id + "v").textContent = fmt[k](plan[k]);
+    const t = $("#" + id + "T"), set = S.over[k] !== undefined; t.textContent = set ? "set" : "auto"; t.classList.toggle("set", set);
+  }
+}
 function updateSim() {
   if (!HAS_TASTE) return;
-  const ex = +$("#ex").value, stops = Math.max(1, Math.min(15, +$("#stops").value || 5)), seed = +$("#seed").value || 0;
+  const ex = +$("#ex").value, seed = +$("#seed").value || 0;
   $("#exv").textContent = ex.toFixed(2);
-  const rad = Math.max(0, Math.min(6, +$("#rad").value || 0));
-  S.sim = simulate(ex, stops, seed, S.start, rad);
-  $("#radOut").textContent = S.sim.local ? `Local walk: ${S.sim.local.inRadius - 1} genres within ${rad} link(s) of ${labels[S.sim[0]]}` +
-    (S.sim.length < stops ? ` (too few for ${stops} stops)` : "") : "";
+  const plan = flowPlan();
+  if (TH !== plan.min_link_weight || NW_LO !== plan.min_genre_weight) { TH = plan.min_link_weight; NW_LO = plan.min_genre_weight; applyTh(); }
+  syncControls(plan); thText(); nwText();
+  S.sim = simulate(plan, seed, S.start);
+  S.plan = plan;
   const fam = S.sim.length ? (S.sim.reduce((s, g) => s + (SP.f.get(g) || 0), 0) / S.sim.length).toFixed(2) : "0";
-  $("#simOut").innerHTML = `<b style="color:var(--sim)">Simulated</b> <span class="m">(JS port, seed ${seed}, familiarity ${fam})</span>${chips(S.sim)}`;
+  $("#simOut").innerHTML = `<b style="color:var(--sim)">Simulated</b> <span class="m">(seed ${seed}, familiarity ${fam})</span>${chips(S.sim)}`;
+  const shown = Object.entries(plan).filter(([k]) => !["warnings", "explicit"].includes(k)).map(([k, v]) => `${k} ${v}`).join(" · ");
+  $("#planOut").innerHTML = `<span class="m">plan: ${esc(shown)}${plan.explicit.length ? " · set: " + plan.explicit.join(", ") : ""}</span>` +
+    plan.warnings.map((w) => `<div style="color:var(--route)">&#9888; ${esc(w)}</div>`).join("");
   const key = realKey(), reals = D.real[key] || [];
-  $("#realOut").innerHTML = `<b>Real paths</b> <span class="m">explore ${key}, ${D.realStops} stops, seeds ${D.seeds.join(", ")}${+key !== ex ? " (nearest precomputed)" : ""}</span>` +
+  $("#realOut").innerHTML = `<b>Real paths</b> <span class="m">explore ${key} with its own default values, seeds ${D.seeds.join(", ")}${+key !== ex ? " (nearest precomputed)" : ""}</span>` +
     reals.map((p, i) => `<div class="pl"><i style="background:${REAL_COL[i % 6]}"></i>${p.map((g) => esc(labels[g])).join(" &rarr; ")}</div>`).join("");
 }
-function thText() {
-  const [ka] = keptEdges();
-  $("#thv").textContent = `${TH.toFixed(2)} – ${TH_HI.toFixed(2)}`; $("#thn").textContent = `(${ka} of ${nE} links kept)`;
-}
-function nwText() {
-  const vis = visNodes[S.mode] || [];
-  $("#nwv").textContent = `${NW_LO.toFixed(2)} – ${NW_HI.toFixed(2)}`;
-  $("#nwn").textContent = `(${vis.filter(shown).length} of ${vis.length} shown)`;
-}
-for (const id of ["nwLo", "nwHi"]) $("#" + id).addEventListener("input", () => {
-  let lo = +$("#nwLo").value, hi = +$("#nwHi").value;
-  if (lo > hi) { if (id === "nwLo") { lo = hi; $("#nwLo").value = lo; } else { hi = lo; $("#nwHi").value = hi; } }
-  NW_LO = lo; NW_HI = hi; applyTh(); nwText(); thText(); updateRoute(); updateSim(); saveHash(); schedule();
-});
+function thText() { const [ka] = keptEdges(); $("#thn").textContent = `(${ka} of ${nE} links)`; }
+function nwText() { const vis = visNodes[S.mode] || []; $("#nwn").textContent = `(${vis.filter(shown).length} of ${vis.length} genres)`; }
 for (const id of ["szT", "szO"]) $("#" + id).addEventListener("input", () => {
   const v = +$("#" + id).value; if (id === "szT") SZ_T = v; else SZ_O = v;
   $("#" + id + "v").textContent = v.toFixed(1); saveHash(); schedule();
 });
-for (const id of ["thLo", "thHi"]) $("#" + id).addEventListener("input", () => {
-  let lo = +$("#thLo").value, hi = +$("#thHi").value;
-  if (lo > hi) { if (id === "thLo") { lo = hi; $("#thLo").value = lo; } else { hi = lo; $("#thHi").value = hi; } }
-  TH = lo; TH_HI = hi; applyTh(); thText(); updateRoute(); updateSim(); saveHash(); schedule();
+for (const [k, id] of Object.entries(OV)) $("#" + id).addEventListener("input", () => {
+  S.over[k] = +$("#" + id).value; updateSim(); updateRoute(); saveHash(); schedule();
 });
-$("#tw").addEventListener("input", () => { TW = +$("#tw").value; $("#twv").textContent = TW.toFixed(1); updateSim(); saveHash(); schedule(); });
-for (const id of ["ex", "stops", "seed", "rad"]) $("#" + id).addEventListener("input", () => { updateSim(); saveHash(); schedule(); });
+$("#reset").onclick = () => { S.over = {}; updateSim(); updateRoute(); saveHash(); schedule(); };
+$("#tie").onchange = (e) => { S.tieLink = e.target.checked; delete S.over.min_link_weight; updateSim(); updateRoute(); saveHash(); schedule(); };
+for (const id of ["tl0", "tl1"]) $("#" + id).addEventListener("input", () => { if (S.tieLink) { updateSim(); updateRoute(); saveHash(); schedule(); } });
+for (const id of ["ex", "seed"]) $("#" + id).addEventListener("input", () => { updateSim(); updateRoute(); saveHash(); schedule(); });
 $("#reroll").onclick = () => { $("#seed").value = Math.floor(Math.random() * 1e6); updateSim(); saveHash(); schedule(); };
 $("#showSim").onchange = (e) => { S.showSim = e.target.checked; schedule(); };
 $("#showReal").onchange = (e) => { S.showReal = e.target.checked; saveHash(); schedule(); };
@@ -1265,10 +1238,12 @@ function init() {
   document.querySelectorAll("#modes button").forEach((b) => { b.classList.toggle("on", b.dataset.m === S.mode); b.onclick = () => { if (!b.disabled) setMode(b.dataset.m); }; });
   $("#panelBtn").onclick = () => $("#side").classList.toggle("open");
   matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { readColors(); legend(); schedule(); });
+  if (HAS_TASTE) { $("#tl0").value = CFG.min_link_weight[0]; $("#tl1").value = CFG.min_link_weight[1]; }
+  if (location.hash.includes("tie=1")) { const h = new URLSearchParams(location.hash.slice(1)); $("#tl0").value = h.get("tl0"); $("#tl1").value = h.get("tl1"); }
   thText(); nwText(); legend(); updateSim(); updateRoute();
   new ResizeObserver(resize).observe(cv); resize();
 }
-window.__atlas = { D, view, S, adj, routeBetween, fit, planPath, simulate, verifyPath, P, names, idx, hit, fitView, setMode, zoomRel,
+window.__atlas = { D, view, S, get adj() { return adj; }, nodeOk: (g) => nodeOk(g), get TH() { return TH; }, get NW() { return NW_LO; }, routeBetween, fit, planPath, simulate, verifyPath, P, names, idx, hit, fitView, setMode, zoomRel,
   get fitK() { return fitK; }, draw };
 init();
 })();
