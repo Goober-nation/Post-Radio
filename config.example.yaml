@@ -128,7 +128,7 @@ advanced:
     mb: 0.7
     yandex: 0.3
   flow_genre_rarity: 1.0
-  flow_max_genre_share: 0.09
+  flow_max_genre_share: 0.05
   flow_parent_discount: 0.3
   flow_stops:
   - 2

@@ -128,7 +128,7 @@ Terms used below:
 | `flow_profile_api` | false | With the store installed, also ask the MusicBrainz API for artists the store doesn't know or has no genres for (1–4 s each). Off = store only. |
 | `flow_source_shares` | mb 0.7, yandex 0.3 | Blend of genre sources in the profile; each is normalised on its own first |
 | `flow_genre_rarity` | 1.0 | Profile: weights each genre by how rare it is among artists in the store, `(log(N / artists with it) / log N) ^ this`, so broad tags like pop or hip hop count less than specific ones. 0 = off; needs the store |
-| `flow_max_genre_share` | 0.09 | Profile: no genre may hold more than this share; the excess goes to the other genres in proportion. 1 = off. Keeps one dominant genre from steering every flow |
+| `flow_max_genre_share` | 0.05 | Profile: no genre may hold more than this share; the excess goes to the other genres in proportion. 1 = off. Keeps one dominant genre from steering every flow |
 | `flow_parent_discount` | 0.3 | Profile: when an artist has a genre and one of its subgenres (Wikidata "subgenre of"), the broader one counts this much for that artist. 1 = off |
 | `flow_stops` | [2, 5] | Genre stops on the path, at explore 0 and 1 (straight line between, rounded). `stops=` overrides it |
 | `flow_taste_weight` | [2.0, 0.7] | How strongly taste steers each step, at explore 0 and 1: a step scores link weight × closeness ^ this. 0 = follow link strength only. `taste_weight=` overrides it |
