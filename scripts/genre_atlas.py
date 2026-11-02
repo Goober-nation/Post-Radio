@@ -384,6 +384,8 @@ button:hover{border-color:var(--muted)}
           <div><label class="f">Seed</label><input type="number" id="seed" min="0" value="1"></div>
           <button id="reroll" title="New random seed">Reroll</button></div>
         <div class="rel"><label class="f" for="start">Start genre (optional)</label><input type="text" id="start" autocomplete="off" placeholder="listener's own genre by default"><div class="ac" id="sac"></div></div>
+        <label class="f">Stay within <input type="number" id="rad" min="0" max="6" value="0" style="width:60px;display:inline-block"> links of the start (0 = off: normal flow)</label>
+        <div class="res m" id="radOut"></div>
         <label class="f" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="showSim" checked> Show simulated path</label>
         <label class="f" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="showReal"> Show precomputed real paths (all 6 seeds)</label>
         <div class="res" id="simOut"></div>
@@ -396,7 +398,7 @@ button:hover{border-color:var(--muted)}
       <div class="dual"><input type="range" id="thLo" min="0" max="1" step="0.01" value="0"><input type="range" id="thHi" min="0" max="1" step="0.01" value="1"></div>
     </details>
     <details open><summary>Show genres by weight</summary>
-      <p class="sub">Hides genres outside the range (display only; routes and flow still use them). Weight: your genres = &radic;(share &divide; top share); other genres = log(1 + links) &divide; log(1 + most links).</p>
+      <p class="sub">Hides genres outside the range; hidden genres are also left out of routes and the flow preview. Weight: your genres = &radic;(share &divide; top share); other genres = log(1 + links) &divide; log(1 + most links).</p>
       <label class="f">Weight <b id="nwv">0.00 – 1.00</b> <span class="m" id="nwn"></span></label>
       <div class="dual"><input type="range" id="nwLo" min="0" max="1" step="0.01" value="0"><input type="range" id="nwHi" min="0" max="1" step="0.01" value="1"></div>
     </details>
@@ -444,8 +446,9 @@ const inBand = (w) => w >= TH - 1e-9 && w <= TH_HI + 1e-9;
 let adj = [];
 const adjKind = D.nb.map((l) => new Map(l.map(([j, , k]) => [j, k])));
 const deg = new Int32Array(N);
+let nodeOk = () => true; // set to the show-by-weight filter below: hidden genres are out of routes and flow too
 function applyTh() {
-  adj = D.nb.map((l) => new Map(l.filter(([, w]) => inBand(w)).map(([j, w]) => [j, w])));
+  adj = D.nb.map((l, i) => new Map(nodeOk(i) ? l.filter(([j, w]) => inBand(w) && nodeOk(j)).map(([j, w]) => [j, w]) : []));
   for (let i = 0; i < N; i++) deg[i] = adj[i].size;
 }
 applyTh();
@@ -553,7 +556,7 @@ function choices(items, weights, rnd) {
 function destination(start, explore, pick) {
   const { f, r } = SP, want = 1 - CFG.destination_reach * explore, fam = canon(famWithSelf(start));
   const ok = (g) => g !== start && (f.get(g) || 0) < OWN_MAX && !intersects(fam, canon(famOf(g)));
-  const el = [...r.keys()].filter(ok);
+  const el = [...r.keys()].filter((g) => nodeOk(g) && ok(g));
   const top = Math.max(0, ...el.map((g) => r.get(g))) || 1;
   const sc = el.map((g) => [r.get(g) / top * (1 - (f.get(g) || 0)) *
     Math.exp(-(((r.get(g) / top - want) / CFG.destination_width) ** 2)), g])
@@ -561,8 +564,21 @@ function destination(start, explore, pick) {
   return sc.length ? pick("dest", sc.map((s) => s[1]), sc.map((s) => s[0])) : null;
 }
 // pick(kind, items, weights, ctx) -> item. Live runs sample with a seeded PRNG; verification forces python's choices.
-function planPath(explore, stops, pick, start) {
-  const { f, r, own, first } = SP;
+function hopsFrom(a, R) { // BFS distance (in links) from a, up to R
+  const d = new Map([[a, 0]]); let fr = [a];
+  for (let h = 1; h <= R && fr.length; h++) { const nx = [];
+    for (const g of fr) for (const n of adj[g].keys()) if (!d.has(n)) { d.set(n, h); nx.push(n); }
+    fr = nx; }
+  return d;
+}
+// radius > 0: local walk. Every stop stays within `radius` links of the start (no destination routing); the walk
+// takes the strongest pull among in-radius neighbours, and at a dead end jumps to the best unvisited in-radius genre,
+// so it reaches `stops` stops whenever the radius holds that many genres. Genres outside the taste still get a small
+// pull (LOCAL_EPS) so a start outside the profile can walk.
+const LOCAL_EPS = 0.05;
+function planPath(explore, stops, pick, start, radius) {
+  const { f, r, first } = SP;
+  const own = SP.own.filter((g) => nodeOk(g));
   if (!r.size || stops < 1) return [];
   const pull = (g) => { const rg = r.get(g) || 0, fg = f.get(g) || 0;
     return (1 - explore) * fg + explore * rg * (1 - HUB * explore * rg) * (1 - fg); };
@@ -572,6 +588,24 @@ function planPath(explore, stops, pick, start) {
   else path = [first];
   const home = canon(famWithSelf(path[0]).size ? new Set([...(D.roots[path[0]] || []).map((x) => "r" + x), "g" + path[0]]) : new Set());
   let away = false;
+  if (radius > 0) {
+    const near = hopsFrom(path[0], radius);
+    const lp = (g) => pull(g) + LOCAL_EPS;
+    while (path.length < stops) {
+      const last = path[path.length - 1], nb = [];
+      for (const [n, w] of adj[last]) if (near.has(n) && !path.includes(n)) nb.push([n, w * lp(n)]);
+      if (nb.length) {
+        const best = nb.sort((x, y) => (y[1] - x[1]) || cmpName(x[0], y[0])).slice(0, CAND);
+        path.push(pick("step", best.map((b) => b[0]), best.map((b) => b[1]), { path }));
+      } else {
+        const rest = [...near.keys()].filter((g) => !path.includes(g)).sort((a, b) => (lp(b) - lp(a)) || cmpName(a, b));
+        if (!rest.length) break;
+        path.push(rest[0]);
+      }
+    }
+    path.local = { radius, inRadius: near.size };
+    return path;
+  }
   if (explore >= CFG.destination_from && stops > 1) {
     const dest = destination(path[0], explore, (k, it, w) => pick(k, it, w, { path, start: path[0] }));
     const route = dest !== null ? routeBetween(path[0], dest) : null;
@@ -585,7 +619,7 @@ function planPath(explore, stops, pick, start) {
       const best = nb.sort((x, y) => (y[1] - x[1]) || cmpName(x[0], y[0])).slice(0, CAND);
       path.push(pick("step", best.map((b) => b[0]), best.map((b) => b[1]), { path }));
     } else {
-      const rest = [...r.keys()].filter((g) => !path.includes(g) && pull(g) * damp(g) > 0)
+      const rest = [...r.keys()].filter((g) => nodeOk(g) && !path.includes(g) && pull(g) * damp(g) > 0)
         .sort((a, b) => (pull(b) * damp(b) - pull(a) * damp(a)) || cmpName(a, b));
       if (!rest.length) break;
       path.push(rest[0]);
@@ -593,9 +627,10 @@ function planPath(explore, stops, pick, start) {
   }
   return path;
 }
-function simulate(explore, stops, seed, start) {
+function simulate(explore, stops, seed, start, radius) {
   const rnd = mulberry32(seed >>> 0);
-  return planPath(explore, stops, (k, items, w) => choices(items, w, rnd), start);
+  if (start !== undefined && start !== null && !nodeOk(start)) return [];
+  return planPath(explore, stops, (k, items, w) => choices(items, w, rnd), start, radius || 0);
 }
 // Replay a python path through the port with every random choice forced to python's: true when the port's rules can
 // produce exactly that path (each pick was among the candidates the port offers, each deterministic step matches).
@@ -677,6 +712,7 @@ let NW_LO = 0, NW_HI = 1;
 const maxDeg0 = Math.max(...D.nb.map((l) => l.length), 1);
 const nodeW = (g) => (S.mode !== "data" && inTaste[g] ? Math.sqrt(share[g] / topShare) : Math.log1p(D.nb[g].length) / Math.log1p(maxDeg0));
 const shown = (g) => { const w = nodeW(g); return w >= NW_LO - 1e-9 && w <= NW_HI + 1e-9; };
+nodeOk = shown;
 function nodeR(g) {
   const z = Math.min(Math.max(Math.sqrt(zoomRel()), 0.75), 4.5);
   if (S.mode === "taste" || (S.mode === "blend" && inTaste[g])) return (3.2 + 34 * Math.sqrt(share[g])) * (S.mode === "taste" ? 1 : 0.8) * z * SZ_T;
@@ -979,6 +1015,7 @@ function saveHash() {
   if (S.start !== undefined) add("start", names[S.start]);
   add("mode", S.mode); add("ex", $("#ex").value); add("stops", $("#stops").value); add("seed", $("#seed").value);
   if (S.showReal) add("real", 1);
+  if (+$("#rad").value > 0) add("rad", $("#rad").value);
   if (TH > 0) add("th", TH.toFixed(2)); if (TH_HI < 1) add("thhi", TH_HI.toFixed(2));
   if (SZ_T !== 1) add("szt", SZ_T); if (SZ_O !== 1) add("szo", SZ_O);
   if (NW_LO > 0) add("nwlo", NW_LO); if (NW_HI < 1) add("nwhi", NW_HI);
@@ -992,6 +1029,7 @@ function loadHash() {
   if (g("from") >= 0) { S.from = g("from"); $("#from").value = labels[S.from]; }
   if (g("to") >= 0) { S.to = g("to"); $("#to").value = labels[S.to]; }
   if (g("start") >= 0) { S.start = g("start"); $("#start").value = labels[S.start]; }
+  if (h.get("rad")) $("#rad").value = h.get("rad");
   if (h.get("th")) { TH = Math.min(Math.max(+h.get("th") || 0, 0), 1); $("#thLo").value = TH; }
   if (h.get("thhi")) { TH_HI = Math.min(Math.max(+h.get("thhi") || 1, TH), 1); $("#thHi").value = TH_HI; }
   applyTh();
@@ -1063,6 +1101,7 @@ function updateRoute() {
   S.route = null;
   if (S.from < 0 || S.to < 0) { out.innerHTML = S.from >= 0 ? '<span class="m">Pick the second genre.</span>' : ""; return; }
   if (S.from === S.to) { out.textContent = "Same genre."; return; }
+  if (!nodeOk(S.from) || !nodeOk(S.to)) { out.innerHTML = '<span class="m">A chosen genre is hidden by the weight range.</span>'; return; }
   const p = routeBetween(S.from, S.to);
   if (!p) { out.innerHTML = `<b>No route</b> between ${esc(labels[S.from])} and ${esc(labels[S.to])}: they are in different, disconnected parts of the graph.`; return; }
   let cost = 0, weak = 1; const ws = [];
@@ -1084,7 +1123,10 @@ function updateSim() {
   if (!HAS_TASTE) return;
   const ex = +$("#ex").value, stops = Math.max(1, Math.min(15, +$("#stops").value || 5)), seed = +$("#seed").value || 0;
   $("#exv").textContent = ex.toFixed(2);
-  S.sim = simulate(ex, stops, seed, S.start);
+  const rad = Math.max(0, Math.min(6, +$("#rad").value || 0));
+  S.sim = simulate(ex, stops, seed, S.start, rad);
+  $("#radOut").textContent = S.sim.local ? `Local walk: ${S.sim.local.inRadius - 1} genres within ${rad} link(s) of ${labels[S.sim[0]]}` +
+    (S.sim.length < stops ? ` (too few for ${stops} stops)` : "") : "";
   const fam = S.sim.length ? (S.sim.reduce((s, g) => s + (SP.f.get(g) || 0), 0) / S.sim.length).toFixed(2) : "0";
   $("#simOut").innerHTML = `<b style="color:var(--sim)">Simulated</b> <span class="m">(JS port, seed ${seed}, familiarity ${fam})</span>${chips(S.sim)}`;
   const key = realKey(), reals = D.real[key] || [];
@@ -1103,7 +1145,7 @@ function nwText() {
 for (const id of ["nwLo", "nwHi"]) $("#" + id).addEventListener("input", () => {
   let lo = +$("#nwLo").value, hi = +$("#nwHi").value;
   if (lo > hi) { if (id === "nwLo") { lo = hi; $("#nwLo").value = lo; } else { hi = lo; $("#nwHi").value = hi; } }
-  NW_LO = lo; NW_HI = hi; nwText(); saveHash(); schedule();
+  NW_LO = lo; NW_HI = hi; applyTh(); nwText(); thText(); updateRoute(); updateSim(); saveHash(); schedule();
 });
 for (const id of ["szT", "szO"]) $("#" + id).addEventListener("input", () => {
   const v = +$("#" + id).value; if (id === "szT") SZ_T = v; else SZ_O = v;
@@ -1114,7 +1156,7 @@ for (const id of ["thLo", "thHi"]) $("#" + id).addEventListener("input", () => {
   if (lo > hi) { if (id === "thLo") { lo = hi; $("#thLo").value = lo; } else { hi = lo; $("#thHi").value = hi; } }
   TH = lo; TH_HI = hi; applyTh(); thText(); updateRoute(); updateSim(); saveHash(); schedule();
 });
-for (const id of ["ex", "stops", "seed"]) $("#" + id).addEventListener("input", () => { updateSim(); saveHash(); schedule(); });
+for (const id of ["ex", "stops", "seed", "rad"]) $("#" + id).addEventListener("input", () => { updateSim(); saveHash(); schedule(); });
 $("#reroll").onclick = () => { $("#seed").value = Math.floor(Math.random() * 1e6); updateSim(); saveHash(); schedule(); };
 $("#showSim").onchange = (e) => { S.showSim = e.target.checked; schedule(); };
 $("#showReal").onchange = (e) => { S.showReal = e.target.checked; saveHash(); schedule(); };
@@ -1125,7 +1167,7 @@ function setMode(m) {
   S.mode = m; S.hover = -1; showTip(-1);
   document.querySelectorAll("#modes button").forEach((b) => b.classList.toggle("on", b.dataset.m === m));
   if (m === "taste") { for (const k of ["from", "to"]) if (S[k] >= 0 && !inTaste[S[k]]) { S[k] = -1; $("#" + k).value = ""; } if (S.sel >= 0 && !inTaste[S.sel]) S.sel = -1; }
-  fitView(); updateRoute(); legend(); nwText(); saveHash(); schedule();
+  applyTh(); fitView(); updateRoute(); updateSim(); legend(); nwText(); saveHash(); schedule();
 }
 function legend() {
   const m = S.mode, L = [];
