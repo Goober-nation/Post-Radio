@@ -391,9 +391,9 @@ button:hover{border-color:var(--muted)}
       </div>
     </details>
     <details open><summary>Link strength</summary>
-      <p class="sub">Links weaker than this are ignored by routes, the flow preview and the drawing. (Your taste spread and the real paths were computed on the full graph.)</p>
-      <label class="f">Minimum weight: <b id="thv">0.00</b> <span class="m" id="thn"></span></label>
-      <input type="range" id="th" min="0" max="0.6" step="0.01" value="0">
+      <p class="sub">Links outside this range are ignored by routes, the flow preview and the drawing. (Your taste spread and the real paths were computed on the full graph.)</p>
+      <label class="f">Weight <b id="thv">0.00 – 1.00</b> <span class="m" id="thn"></span></label>
+      <div class="dual"><input type="range" id="thLo" min="0" max="1" step="0.01" value="0"><input type="range" id="thHi" min="0" max="1" step="0.01" value="1"></div>
     </details>
     <details open><summary>Show genres by weight</summary>
       <p class="sub">Hides genres outside the range (display only; routes and flow still use them). Weight: your genres = &radic;(share &divide; top share); other genres = log(1 + links) &divide; log(1 + most links).</p>
@@ -438,13 +438,14 @@ const KGROUP = [0, 0, 2, 1, 1, 1]; // 0 Wikidata, 1 learned, 2 Yandex
 const HAS_TASTE = D.meta.taste;
 
 // ---- graph (adjacency in the python order, so Dijkstra breaks ties as route_between does)
-// TH: links weaker than this are ignored by routes, the flow simulation and the drawing (sidebar slider)
-let TH = 0;
+// links outside [TH, TH_HI] are ignored by routes, the flow simulation and the drawing (sidebar range)
+let TH = 0, TH_HI = 1;
+const inBand = (w) => w >= TH - 1e-9 && w <= TH_HI + 1e-9;
 let adj = [];
 const adjKind = D.nb.map((l) => new Map(l.map(([j, , k]) => [j, k])));
 const deg = new Int32Array(N);
 function applyTh() {
-  adj = D.nb.map((l) => new Map(l.filter(([, w]) => w >= TH).map(([j, w]) => [j, w])));
+  adj = D.nb.map((l) => new Map(l.filter(([, w]) => inBand(w)).map(([j, w]) => [j, w])));
   for (let i = 0; i < N; i++) deg[i] = adj[i].size;
 }
 applyTh();
@@ -471,7 +472,7 @@ if (D.tpos) D.tasteIds.forEach((g, i) => { tpos[2 * g] = D.tpos[i][0]; tpos[2 * 
 const tasteIds = D.tasteIds;
 const tasteEdge = new Uint8Array(nE); // both ends in the taste profile
 for (let e = 0; e < nE; e++) tasteEdge[e] = inTaste[ea[e]] && inTaste[eb[e]] ? 1 : 0;
-const keptEdges = () => { let a = 0, t = 0; for (let e = 0; e < nE; e++) if (ew[e] >= TH) { a++; t += tasteEdge[e]; } return [a, t]; };
+const keptEdges = () => { let a = 0, t = 0; for (let e = 0; e < nE; e++) if (inBand(ew[e])) { a++; t += tasteEdge[e]; } return [a, t]; };
 
 // ---- flow / route: port of postradio.flow (plan_path, destination, route_between, fit)
 function mulberry32(a) {
@@ -713,7 +714,7 @@ function drawEdges() {
   // class: 0 plain data edge, 1 touches a taste node (blend), 2 taste-taste (overlap)
   const groups = new Map();
   for (let e = 0; e < nE; e++) {
-    if (ew[e] < TH) continue;
+    if (!inBand(ew[e])) continue;
     if (m === "taste" && !tasteEdge[e]) continue;
     if (!visibleEdge(e, P_, x0, y0, x1, y1)) continue;
     const cls = m === "blend" ? (tasteEdge[e] ? 2 : (inTaste[ea[e]] || inTaste[eb[e]] ? 1 : 0)) : 0;
@@ -868,7 +869,7 @@ function draw() {
   const zr = zoomRel();
   const [ka, kt] = keptEdges();
   $("#status").textContent = `${S.mode === "taste" ? tasteIds.length : N} genres, ${S.mode === "taste" ? kt : ka} links` +
-    `${TH > 0 ? ` (weight ≥ ${TH.toFixed(2)})` : ""} · zoom ${zr.toFixed(1)}x`;
+    `${TH > 0 || TH_HI < 1 ? ` (weight ${TH.toFixed(2)}–${TH_HI.toFixed(2)})` : ""} · zoom ${zr.toFixed(1)}x`;
 }
 
 // ---- interaction
@@ -978,7 +979,7 @@ function saveHash() {
   if (S.start !== undefined) add("start", names[S.start]);
   add("mode", S.mode); add("ex", $("#ex").value); add("stops", $("#stops").value); add("seed", $("#seed").value);
   if (S.showReal) add("real", 1);
-  if (TH > 0) add("th", TH.toFixed(2));
+  if (TH > 0) add("th", TH.toFixed(2)); if (TH_HI < 1) add("thhi", TH_HI.toFixed(2));
   if (SZ_T !== 1) add("szt", SZ_T); if (SZ_O !== 1) add("szo", SZ_O);
   if (NW_LO > 0) add("nwlo", NW_LO); if (NW_HI < 1) add("nwhi", NW_HI);
   try { history.replaceState(null, "", "#" + q.join("&")); } catch (e) { /* sandboxed */ }
@@ -991,7 +992,9 @@ function loadHash() {
   if (g("from") >= 0) { S.from = g("from"); $("#from").value = labels[S.from]; }
   if (g("to") >= 0) { S.to = g("to"); $("#to").value = labels[S.to]; }
   if (g("start") >= 0) { S.start = g("start"); $("#start").value = labels[S.start]; }
-  if (h.get("th")) { TH = Math.min(Math.max(+h.get("th") || 0, 0), 0.6); $("#th").value = TH; applyTh(); }
+  if (h.get("th")) { TH = Math.min(Math.max(+h.get("th") || 0, 0), 1); $("#thLo").value = TH; }
+  if (h.get("thhi")) { TH_HI = Math.min(Math.max(+h.get("thhi") || 1, TH), 1); $("#thHi").value = TH_HI; }
+  applyTh();
   if (h.get("nwlo")) { NW_LO = Math.min(Math.max(+h.get("nwlo") || 0, 0), 1); $("#nwLo").value = NW_LO; }
   if (h.get("nwhi")) { NW_HI = Math.min(Math.max(+h.get("nwhi") || 1, 0), 1); $("#nwHi").value = NW_HI; }
   for (const [k, id] of [["szt", "szT"], ["szo", "szO"]]) if (h.get(k)) { const v = Math.min(Math.max(+h.get(k) || 1, 0.2), 3);
@@ -1090,7 +1093,7 @@ function updateSim() {
 }
 function thText() {
   const [ka] = keptEdges();
-  $("#thv").textContent = TH.toFixed(2); $("#thn").textContent = `(${ka} of ${nE} links kept)`;
+  $("#thv").textContent = `${TH.toFixed(2)} – ${TH_HI.toFixed(2)}`; $("#thn").textContent = `(${ka} of ${nE} links kept)`;
 }
 function nwText() {
   const vis = visNodes[S.mode] || [];
@@ -1106,7 +1109,11 @@ for (const id of ["szT", "szO"]) $("#" + id).addEventListener("input", () => {
   const v = +$("#" + id).value; if (id === "szT") SZ_T = v; else SZ_O = v;
   $("#" + id + "v").textContent = v.toFixed(1); saveHash(); schedule();
 });
-$("#th").addEventListener("input", () => { TH = +$("#th").value; applyTh(); thText(); updateRoute(); updateSim(); saveHash(); schedule(); });
+for (const id of ["thLo", "thHi"]) $("#" + id).addEventListener("input", () => {
+  let lo = +$("#thLo").value, hi = +$("#thHi").value;
+  if (lo > hi) { if (id === "thLo") { lo = hi; $("#thLo").value = lo; } else { hi = lo; $("#thHi").value = hi; } }
+  TH = lo; TH_HI = hi; applyTh(); thText(); updateRoute(); updateSim(); saveHash(); schedule();
+});
 for (const id of ["ex", "stops", "seed"]) $("#" + id).addEventListener("input", () => { updateSim(); saveHash(); schedule(); });
 $("#reroll").onclick = () => { $("#seed").value = Math.floor(Math.random() * 1e6); updateSim(); saveHash(); schedule(); };
 $("#showSim").onchange = (e) => { S.showSim = e.target.checked; schedule(); };
