@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
 """Genre Atlas: render Post-Radio's genre graph as one self-contained interactive HTML page.
 
-    .venv/bin/python scripts/genre_atlas.py --home DIR [--yandex-export FILE] --out atlas.html
+    pip install numpy scipy        # once, next to Post-Radio
+    postradio data fetch           # once: the data release (store, graph, weights)
+    python scripts/genre_atlas.py --home ~/.local/share/postradio/.. --out atlas.html     # graph only
+    python scripts/genre_atlas.py --home DIR --yandex https://music.yandex.ru/playlists/lk.... \
+        --title "Genre Atlas" --out atlas.html                                             # with a listener
 
-The graph is exactly the one flow mode walks (Recommender.genre_graph(): Wikidata links, learned weights, Yandex
-genre tree). With --yandex-export the listener's taste profile is computed the way scripts/e2e/case.py does (the
-playlist call is answered from the export; the ListenBrainz token comes from $LISTENBRAINZ_TOKEN) and the page
-gets the Taste and Blend modes, the spread (nearby genres) and a flow-path preview. Without it only the Data
-mode is available.
+--home is the Post-Radio home that holds data/ (the folder `postradio data status` reports, minus /data).
+--yandex takes a playlist link (read live; Yandex blocks some regions) or a playlist export JSON (replayed).
+$LISTENBRAINZ_TOKEN, when set, is used for the profile call only. The graph is exactly the one flow mode walks
+(Recommender.genre_graph(): Wikidata links, learned weights, Yandex genre tree). With a listener the page gets
+the Taste and Blend modes, profiles per half-life, the spread (nearby genres) and a flow preview whose real
+paths come from Post-Radio's own planner (Radio.flow_plan + flow.plan_path); the page's JS port of the walk
+is checked against them.
 
 The layout is computed here, once (seeded force layout, numpy/scipy), so every page load shows the same frozen
-picture; the page never simulates. Real flow paths are planned with postradio.flow.plan_path; the page ports
-plan_path / destination / route_between / fit to JavaScript for live simulation.
-
-The output holds the listener's genre shares (no artists, titles or account data): treat it as personal.
+picture. The output holds the listener's genre shares (no artists, titles or account data): treat it as personal.
 """
 import argparse
 import dataclasses
@@ -21,6 +24,7 @@ import json
 import os
 import random
 import sys
+from html import escape
 from pathlib import Path
 
 import numpy as np
@@ -80,6 +84,10 @@ def edge_kinds(rec: Recommender, graph) -> dict[tuple[str, str], int]:
 
 
 def load_listener(export: str):
+    """A Listener from a playlist link (read live from Yandex) or an export JSON (replayed: Yandex blocks some
+    regions)."""
+    if export.startswith(("http://", "https://")):
+        return Listener(yandex_playlist=export, lb_token=os.environ.get("LISTENBRAINZ_TOKEN") or None)
     raw = json.load(open(export))
     replay = ymod.Playlist(raw["title"], raw["total"], [
         ymod.LikedTrack(tuple(tuple(x) for x in t["artists"]), t["title"], t.get("added_at"), t.get("genre"))
@@ -276,12 +284,16 @@ def build(home: str, export: str | None) -> dict:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--home", required=True, help="Post-Radio home holding the installed data release")
-    ap.add_argument("--yandex-export", help="Yandex playlist export JSON: enables the Taste and Blend modes")
+    ap.add_argument("--yandex", "--yandex-export", dest="yandex_export", metavar="LINK_OR_JSON",
+                    help="a Yandex playlist link, or its export JSON: enables the Taste and Blend modes")
+    ap.add_argument("--title", default="Genre Atlas", help="page title")
     ap.add_argument("--out", required=True, help="HTML file to write")
     args = ap.parse_args()
     data = build(args.home, args.yandex_export)
     blob = json.dumps(data, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
-    Path(args.out).write_text(TEMPLATE.replace("/*DATA*/", blob), encoding="utf-8")
+    html = TEMPLATE.replace("/*DATA*/", blob)
+    html = html.replace("<title>Genre Atlas</title>", f"<title>{escape(args.title)}</title>")
+    Path(args.out).write_text(html, encoding="utf-8")
     m = data["meta"]
     print(f"wrote {args.out}: {m['nodes']} nodes, {m['edges']} edges; taste {m['taste_nodes']} nodes, "
           f"{m['taste_edges']} edges", file=sys.stderr)
