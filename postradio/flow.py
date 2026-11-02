@@ -89,6 +89,26 @@ def taste_profile(weights: dict[str, float], genres_by_source: list[tuple[dict[s
     return {g: round(v / norm, 4) for g, v in out.most_common() if v > 0}
 
 
+def cap_shares(profile: dict[str, float], cap: float) -> dict[str, float]:
+    """No genre above `cap` of the profile: the excess goes to the others in proportion (repeated until nothing
+    is over). cap >= 1 changes nothing; a cap too small for the genres there are gives every genre the same."""
+    if cap >= 1 or not profile:
+        return dict(profile)
+    if cap * len(profile) <= 1:
+        return {g: round(1 / len(profile), 4) for g in profile}
+    out, fixed = dict(profile), set()
+    while True:
+        over = [g for g, v in out.items() if g not in fixed and v > cap + 1e-12]
+        if not over:
+            break
+        fixed |= set(over)
+        rest = sum(v for g, v in out.items() if g not in fixed)
+        left = 1 - cap * len(fixed)
+        for g in out:
+            out[g] = cap if g in fixed else out[g] * left / rest if rest else 0.0
+    return {g: round(v, 4) for g, v in sorted(out.items(), key=lambda kv: -kv[1])}
+
+
 # ---------------------------------------------------------------- path
 def interp(lo_hi: tuple[float, float], explore: float) -> float:
     """The value at `explore` on the straight line from lo_hi[0] (explore 0) to lo_hi[1] (explore 1)."""

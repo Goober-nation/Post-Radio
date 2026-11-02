@@ -164,6 +164,7 @@ class Advanced:
         "mb": 0.7,  # MusicBrainz artist genres (store first, then the API)
         "yandex": 0.3})  # Yandex album genres of the liked tracks
     flow_genre_rarity: float = 1.0  # profile: weight genres by rarity among artists (store); 0 = off
+    flow_max_genre_share: float = 1.0  # profile: no genre above this share (excess spread over the rest); 1 = off
     flow_parent_discount: float = 0.3  # profile: a genre next to one of its subgenres counts this much; 1 = off
     # explore sets these on a straight line from (value at explore 0, value at explore 1); explicit call args win
     flow_stops: tuple[float, float] = (2, 5)  # genre stops on the path (rounded)

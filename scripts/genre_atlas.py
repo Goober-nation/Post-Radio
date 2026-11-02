@@ -274,7 +274,8 @@ def build(home: str, export: str | None) -> dict:
         "spread": [[idx[s.genre], s.score, s.hop] for s in spread],
         "cfg": {"stops": list(a.flow_stops), "taste_weight": list(a.flow_taste_weight),
                 "min_link_weight": list(a.flow_min_link_weight), "min_genre_weight": a.flow_min_genre_weight,
-                "radius": a.flow_radius, "candidates": pc.candidates, "floor": pc.floor},
+                "radius": a.flow_radius, "candidates": pc.candidates, "floor": pc.floor,
+                "max_genre_share": a.flow_max_genre_share},
         "real": real, "explores": list(EXPLORES), "seeds": list(SEEDS),
         "spreadParams": {"hops": a.genre_spread_hops, "decay": a.genre_spread_decay},
         "variants": packed, "halfLives": sorted(variants, key=lambda h: h or 10**9), "hlDefault": hl_default,
@@ -418,6 +419,8 @@ button:hover{border-color:var(--muted)}
       <p class="sub">How fast old likes fade from the profile: a like this many days older than your newest counts half. Profiles are precomputed for each step.</p>
       <label class="f">Half-life: <b id="hlv"></b></label>
       <input type="range" id="hl" min="0" max="0" step="1" value="0">
+      <label class="f">Max genre share: <b id="capv"></b> <span class="m">(no genre above this share of the profile; the excess goes to the rest)</span></label>
+      <input type="range" id="cap" min="0.05" max="1" step="0.01" value="1">
     </details>
     <details open id="flowBox"><summary>Flow preview</summary>
       <p class="sub" id="flowNote">Simulates flow mode's genre path (JS port of plan_path).</p>
@@ -595,15 +598,52 @@ function prepSpread() {
 }
 let SP = HAS_TASTE ? prepSpread() : null;
 // half-life slider: swap in the profile, spread and real paths computed (in python) for that half-life
-function useHalfLife(hl) {
-  const v = D.variants && D.variants[String(hl)]; if (!v) return;
-  D.profile = v.profile; D.spread = v.spread; D.real = v.real;
+// max genre share: the profile capped like postradio.flow.cap_shares, then spread again over the full graph
+// (port of genres.spread). At cap 1 the python-computed profile and spread are used as they are.
+let CAP = 1, BASE = null;
+function capShares(prof, cap) { // prof: [[id, share]]
+  if (cap >= 1 || !prof.length) return prof.slice();
+  if (cap * prof.length <= 1) return prof.map(([g]) => [g, 1 / prof.length]);
+  const out = new Map(prof), fixed = new Set();
+  for (;;) {
+    const over = [...out].filter(([g, v]) => !fixed.has(g) && v > cap + 1e-12).map(([g]) => g);
+    if (!over.length) break;
+    over.forEach((g) => fixed.add(g));
+    let rest = 0; for (const [g, v] of out) if (!fixed.has(g)) rest += v;
+    const left = 1 - cap * fixed.size;
+    for (const [g, v] of out) out.set(g, fixed.has(g) ? cap : rest ? v * left / rest : 0);
+  }
+  return [...out].sort((a, b) => b[1] - a[1]);
+}
+function spreadOf(prof) {
+  const { hops, decay } = D.spreadParams, best = new Map(prof.filter(([, v]) => v > 0).map(([g, v]) => [g, [v, 0]]));
+  let frontier = new Map(best);
+  for (let h = 1; h <= hops; h++) {
+    const nxt = new Map();
+    for (const [g, [sc]] of frontier) for (const [n, w] of D.nb[g]) {
+      const v = sc * w * decay;
+      if (v > (best.get(n) || [0])[0] && v > (nxt.get(n) || [0])[0]) nxt.set(n, [v, h]);
+    }
+    for (const [k, v] of nxt) best.set(k, v);
+    frontier = nxt;
+  }
+  return [...best].map(([g, [v, h]]) => [g, v, h]).sort((a, b) => (b[1] - a[1]) || cmpName(a[0], b[0]));
+}
+function applyProfile() {
+  if (!BASE) BASE = { profile: D.profile, spread: D.spread };
+  D.profile = CAP >= 1 ? BASE.profile : capShares(BASE.profile, CAP);
+  D.spread = CAP >= 1 ? BASE.spread : spreadOf(D.profile);
   share.fill(0); inTaste.fill(0); D.profile.forEach(([i, s]) => { share[i] = s; inTaste[i] = 1; });
   topShare = Math.max(...D.profile.map((p) => p[1]), 1e-9);
   spreadScore.fill(0); spreadHop.fill(-1); D.spread.forEach(([i, s, h]) => { spreadScore[i] = s; spreadHop[i] = h; });
   topR = Math.max(...D.spread.map((p) => p[1]), 1e-9);
   for (let e = 0; e < nE; e++) tasteEdge[e] = inTaste[ea[e]] && inTaste[eb[e]] ? 1 : 0;
   SP = prepSpread();
+}
+function useHalfLife(hl) {
+  const v = D.variants && D.variants[String(hl)]; if (!v) return;
+  BASE = { profile: v.profile, spread: v.spread }; D.real = v.real;
+  applyProfile();
 }
 
 function choices(items, weights, rnd) {
@@ -705,7 +745,13 @@ function hlInit() {
   const h = new URLSearchParams(location.hash.slice(1));
   if (h.has("hl") && list.includes(+h.get("hl"))) HL = +h.get("hl");
   el.max = list.length - 1; el.value = list.indexOf(HL); $("#hlv").textContent = hlText(HL);
-  if (HL !== D.hlDefault) useHalfLife(HL);
+  CAP = Math.min(Math.max(+(h.get("cap") || CFG.max_genre_share || 1), 0.05), 1);
+  $("#cap").value = CAP; $("#capv").textContent = CAP >= 1 ? "off" : CAP.toFixed(2);
+  if (HL !== D.hlDefault) useHalfLife(HL); else if (CAP < 1) applyProfile();
+  $("#cap").addEventListener("input", () => {
+    CAP = +$("#cap").value; $("#capv").textContent = CAP >= 1 ? "off" : CAP.toFixed(2);
+    applyProfile(); setupModes(); legend(); nwText(); updateSim(); updateRoute(); saveHash(); schedule();
+  });
   el.addEventListener("input", () => {
     HL = list[+el.value]; $("#hlv").textContent = hlText(HL);
     useHalfLife(HL); setupModes(); legend(); nwText(); updateSim(); updateRoute(); saveHash(); schedule();
@@ -1063,6 +1109,7 @@ function saveHash() {
   for (const [k, v] of Object.entries(S.over)) add("o_" + k, v); // values set by hand (explore sets the rest)
   if (S.tieLink) { add("tie", 1); add("tl0", $("#tl0").value); add("tl1", $("#tl1").value); }
   if (HAS_TASTE && HL !== D.hlDefault) add("hl", HL);
+  if (HAS_TASTE && CAP !== (CFG.max_genre_share || 1)) add("cap", CAP);
   if (SZ_T !== 1) add("szt", SZ_T); if (SZ_O !== 1) add("szo", SZ_O);
   try { history.replaceState(null, "", "#" + q.join("&")); } catch (e) { /* sandboxed */ }
 }
@@ -1185,7 +1232,7 @@ function updateSim() {
   $("#planOut").innerHTML = `<span class="m">plan: ${esc(shown)}${plan.explicit.length ? " · set: " + plan.explicit.join(", ") : ""}</span>` +
     plan.warnings.map((w) => `<div style="color:var(--route)">&#9888; ${esc(w)}</div>`).join("");
   const key = realKey(), reals = D.real[key] || [];
-  $("#realOut").innerHTML = `<b>Real paths</b> <span class="m">explore ${key} with its own default values, seeds ${D.seeds.join(", ")}${+key !== ex ? " (nearest precomputed)" : ""}</span>` +
+  $("#realOut").innerHTML = `<b>Real paths</b> <span class="m">explore ${key} with its own default values${CAP < 1 ? ", computed without the max share" : ""}, seeds ${D.seeds.join(", ")}${+key !== ex ? " (nearest precomputed)" : ""}</span>` +
     reals.map((p, i) => `<div class="pl"><i style="background:${REAL_COL[i % 6]}"></i>${p.map((g) => esc(labels[g])).join(" &rarr; ")}</div>`).join("");
 }
 function thText() { const [ka] = keptEdges(); $("#thn").textContent = `(${ka} of ${nE} links)`; }

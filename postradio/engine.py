@@ -785,6 +785,7 @@ class Radio:
                 "store": getattr(resolver, "store", None) is not None}
         profile = flow_mod.taste_profile(weights, sources, self._rarity(resolver), graph.ancestors,
                                          a.flow_parent_discount)
+        profile = flow_mod.cap_shares(profile, a.flow_max_genre_share)
         if not profile:
             raise InvalidInput("flow: no genres found for the liked artists")
         self.log("profile: " + ", ".join(f"{g} {s:.2f}" for g, s in list(profile.items())[:8]))
@@ -822,6 +823,7 @@ class Radio:
             "radius": int(pick("radius", p.radius, a.flow_radius)),
             "new_artist_share": e,
             "min_genre_weight": a.flow_min_genre_weight, "half_life_days": a.flow_half_life_days,
+            "max_genre_share": a.flow_max_genre_share,
             "genre_rarity": a.flow_genre_rarity, "parent_discount": a.flow_parent_discount,
             "start": p.start, "explicit": explicit, "warnings": [],
         }

@@ -267,3 +267,13 @@ def test_ancestors_are_transitive_and_survive_cycles():
     from postradio.genres import ancestors_of
     anc = ancestors_of([("c", "b", "subgenre_of"), ("b", "a", "subgenre_of"), ("a", "c", "subgenre_of")])
     assert anc["c"] >= {"a", "b"} and "c" not in anc["c"]
+
+
+def test_cap_shares_spreads_the_excess_and_keeps_the_sum():
+    from postradio.flow import cap_shares
+    p = {"hip hop": 0.6, "pop": 0.2, "rock": 0.15, "jazz": 0.05}
+    got = cap_shares(p, 0.4)  # hip hop's 0.2 excess goes to the rest in proportion: pop 0.3, rock 0.225, jazz 0.075
+    assert got["hip hop"] == 0.4 and max(got.values()) <= 0.4 + 1e-4
+    assert cap_shares(p, 0.3) == {"hip hop": 0.3, "pop": 0.3, "rock": 0.3, "jazz": 0.1}  # the excess can cap others
+    assert abs(sum(got.values()) - 1) < 1e-3 and got["pop"] > got["rock"] > got["jazz"]  # order kept below the cap
+    assert cap_shares(p, 1) == p and cap_shares(p, 0.1) == {g: 0.25 for g in p}  # too small: all equal
