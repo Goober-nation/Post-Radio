@@ -408,6 +408,8 @@ button:hover{border-color:var(--muted)}
           <div><label class="f">Seed</label><input type="number" id="seed" min="0" value="1"></div>
           <button id="reroll" title="New random seed">Reroll</button></div>
         <div class="rel"><label class="f" for="start">Start genre (optional)</label><input type="text" id="start" autocomplete="off" placeholder="listener's own genre by default"><div class="ac" id="sac"></div></div>
+        <label class="f">Taste weight: <b id="twv">1.0</b> <span class="m">(0 = follow link strength only, 1 = flow as built, 2 = taste-heavy)</span></label>
+        <input type="range" id="tw" min="0" max="2" step="0.1" value="1">
         <label class="f">Stay within <input type="number" id="rad" min="0" max="6" value="0" style="width:60px;display:inline-block"> links of the start (0 = off: normal flow)</label>
         <div class="res m" id="radOut"></div>
         <label class="f" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="showSim" checked> Show simulated path</label>
@@ -611,6 +613,8 @@ function hopsFrom(a, R) { // BFS distance (in links) from a, up to R
 // so it reaches `stops` stops whenever the radius holds that many genres. Genres outside the taste still get a small
 // pull (LOCAL_EPS) so a start outside the profile can walk.
 const LOCAL_EPS = 0.05;
+// taste weight: a step scores link weight × pull ^ TW (1 = python's flow, 0 = link strength only, 2 = taste-heavy)
+let TW = 1;
 function planPath(explore, stops, pick, start, radius) {
   const { f, r, first } = SP;
   const own = SP.own.filter((g) => nodeOk(g));
@@ -625,7 +629,7 @@ function planPath(explore, stops, pick, start, radius) {
   let away = false;
   if (radius > 0) {
     const near = hopsFrom(path[0], radius);
-    const lp = (g) => pull(g) + LOCAL_EPS;
+    const lp = (g) => Math.pow(pull(g) + LOCAL_EPS, TW);
     while (path.length < stops) {
       const last = path[path.length - 1], nb = [];
       for (const [n, w] of adj[last]) if (near.has(n) && !path.includes(n)) nb.push([n, w * lp(n)]);
@@ -649,7 +653,9 @@ function planPath(explore, stops, pick, start, radius) {
   const damp = (g) => (away && intersects(home, canon(famOf(g))) ? 1 - explore : 1);
   while (path.length < stops) {
     const last = path[path.length - 1], nb = [];
-    for (const [n, w] of adj[last]) { if (path.includes(n)) continue; const pd = pull(n) * damp(n); if (pd > 0) nb.push([n, w * pd]); }
+    for (const [n, w] of adj[last]) { if (path.includes(n)) continue; const pd = pull(n) * damp(n);
+      if (TW === 1) { if (pd > 0) nb.push([n, w * pd]); } // exactly python's rule
+      else if (TW === 0 || pd > 0) nb.push([n, w * Math.pow(pd || 0, TW)]); }
     if (nb.length) {
       const best = nb.sort((x, y) => (y[1] - x[1]) || cmpName(x[0], y[0])).slice(0, CAND);
       path.push(pick("step", best.map((b) => b[0]), best.map((b) => b[1]), { path }));
@@ -1065,6 +1071,7 @@ function saveHash() {
   add("mode", S.mode); add("ex", $("#ex").value); add("stops", $("#stops").value); add("seed", $("#seed").value);
   if (S.showReal) add("real", 1);
   if (+$("#rad").value > 0) add("rad", $("#rad").value);
+  if (TW !== 1) add("tw", TW);
   if (TH > 0) add("th", TH.toFixed(2)); if (TH_HI < 1) add("thhi", TH_HI.toFixed(2));
   if (HAS_TASTE && HL !== D.hlDefault) add("hl", HL);
   if (SZ_T !== 1) add("szt", SZ_T); if (SZ_O !== 1) add("szo", SZ_O);
@@ -1080,6 +1087,7 @@ function loadHash() {
   if (g("to") >= 0) { S.to = g("to"); $("#to").value = labels[S.to]; }
   if (g("start") >= 0) { S.start = g("start"); $("#start").value = labels[S.start]; }
   if (h.get("rad")) $("#rad").value = h.get("rad");
+  if (h.get("tw")) { TW = Math.min(Math.max(+h.get("tw"), 0), 2); $("#tw").value = TW; $("#twv").textContent = TW.toFixed(1); }
   if (h.get("th")) { TH = Math.min(Math.max(+h.get("th") || 0, 0), 1); $("#thLo").value = TH; }
   if (h.get("thhi")) { TH_HI = Math.min(Math.max(+h.get("thhi") || 1, TH), 1); $("#thHi").value = TH_HI; }
   applyTh();
@@ -1206,6 +1214,7 @@ for (const id of ["thLo", "thHi"]) $("#" + id).addEventListener("input", () => {
   if (lo > hi) { if (id === "thLo") { lo = hi; $("#thLo").value = lo; } else { hi = lo; $("#thHi").value = hi; } }
   TH = lo; TH_HI = hi; applyTh(); thText(); updateRoute(); updateSim(); saveHash(); schedule();
 });
+$("#tw").addEventListener("input", () => { TW = +$("#tw").value; $("#twv").textContent = TW.toFixed(1); updateSim(); saveHash(); schedule(); });
 for (const id of ["ex", "stops", "seed", "rad"]) $("#" + id).addEventListener("input", () => { updateSim(); saveHash(); schedule(); });
 $("#reroll").onclick = () => { $("#seed").value = Math.floor(Math.random() * 1e6); updateSim(); saveHash(); schedule(); };
 $("#showSim").onchange = (e) => { S.showSim = e.target.checked; schedule(); };
