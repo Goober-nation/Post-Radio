@@ -780,12 +780,22 @@ class Radio:
         used = {"likes": len(likes), "artists": n_artists, "considered": len(top),
                 "matched": sum(1 for v in resolved.values() if v), "with_genres": len(with_genres),
                 "store": getattr(resolver, "store", None) is not None}
-        profile = flow_mod.taste_profile(weights, sources)
+        profile = flow_mod.taste_profile(weights, sources, self._rarity(resolver), graph.ancestors,
+                                         a.flow_parent_discount)
         if not profile:
             raise InvalidInput("flow: no genres found for the liked artists")
         self.log("profile: " + ", ".join(f"{g} {s:.2f}" for g, s in list(profile.items())[:8]))
         spread = graph.spread(profile, a.genre_spread_hops, a.genre_spread_decay)
         return top, resolved, sources, profile, spread, used
+
+    def _rarity(self, resolver) -> dict[str, float] | None:
+        """genre -> (log(N / artists with it) / log N) ** flow_genre_rarity, from the store; None without it."""
+        store, k = getattr(resolver, "store", None), self.a.flow_genre_rarity
+        if not store or k <= 0:
+            return None
+        counts, total = store.genre_counts()
+        top = math.log(total + 1) or 1.0
+        return {g: (math.log((total + 1) / (n + 1)) / top) ** k for g, n in counts.items()}
 
     def flow(self, p: Params, graph: GenreGraph, dry: bool = False) -> dict:
         """A playlist with no seed: the user's taste profile (from their likes) spread over the genre graph, a

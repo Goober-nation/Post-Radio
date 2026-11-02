@@ -183,19 +183,29 @@ def layout(n: int, edges: list[tuple[int, int, float]], seed: int, width: float 
 
 
 # ---------------------------------------------------------------- build
+HALF_LIVES = (30, 90, 180, 365, 730, 1460, 0)  # days; 0 = no decay (every like counts the same)
+
+
 def build(home: str, export: str | None) -> dict:
     rec = Recommender(home=home)
     graph = rec.genre_graph()
     a = rec.cfg.advanced
-    profile, nearby_input = {}, None
+    profile, nearby_input, variants = {}, None, {}
+    hl_default = int(a.flow_half_life_days)
     if export:
-        with rec:
-            res = rec.profile(load_listener(export))
-        profile = {r["genre"]: r["share"] for r in res.profile}
-        nearby_input = res.input
+        listener = load_listener(export)
+        for hl in sorted(set(HALF_LIVES) | {hl_default}):
+            adv = dataclasses.replace(a, flow_half_life_days=hl)
+            with rec.with_config(advanced=adv) as r:
+                res = r.profile(listener)
+            variants[hl] = {r_["genre"]: r_["share"] for r_ in res.profile}
+            nearby_input = res.input
+        rec.close()
+        profile = variants[hl_default]
     spread = graph.spread(profile, a.genre_spread_hops, a.genre_spread_decay) if profile else []
 
-    names = sorted(set(graph.nodes) | set(graph.adj) | {n for nb in graph.adj.values() for n in nb} | set(profile))
+    every_taste = {g for v in variants.values() for g in v} | set(profile)
+    names = sorted(set(graph.nodes) | set(graph.adj) | {n for nb in graph.adj.values() for n in nb} | every_taste)
     idx = {n: i for i, n in enumerate(names)}
     kinds = edge_kinds(rec, graph)
     roots_names = sorted({r for n in graph.nodes.values() for r in n.roots})
@@ -205,7 +215,7 @@ def build(home: str, export: str | None) -> dict:
         nb.append([[idx[m], w, kinds[pair(n, m)]] for m, w in graph.adj.get(n, {}).items()])
     n_edges = sum(len(x) for x in nb) // 2
 
-    taste_ids = [idx[g] for g in profile]
+    taste_ids = sorted(idx[g] for g in every_taste)  # every half-life's genres share one frozen taste layout
     tset = set(taste_ids)
     tedges = [(i, j, w) for i in taste_ids for j, w, _ in nb[i] if j in tset and i < j]
     print(f"layout: {len(names)} nodes / {n_edges} edges, taste {len(taste_ids)} nodes / {len(tedges)} edges",
@@ -220,14 +230,22 @@ def build(home: str, export: str | None) -> dict:
     cfg = flow_mod.PlannerConfig(destination_from=a.flow_destination_from, destination_width=a.flow_destination_width,
                                  destination_reach=a.flow_destination_reach)
     roots = {g: n.roots for g, n in graph.nodes.items()}
-    real = {}
-    if spread:
+    def real_paths(sp) -> dict:
+        out = {}
         for ex in EXPLORES:
-            real[f"{ex:.2f}"] = []
+            out[f"{ex:.2f}"] = []
             for seed in SEEDS:
                 rng = random.Random(seed)  # as Radio.flow: the planner gets its own Random drawn from the seed's
-                path = flow_mod.plan_path(spread, graph.adj, ex, REAL_STOPS, random.Random(rng.random()), roots, cfg)
-                real[f"{ex:.2f}"].append([idx[g] for g in path])
+                path = flow_mod.plan_path(sp, graph.adj, ex, REAL_STOPS, random.Random(rng.random()), roots, cfg)
+                out[f"{ex:.2f}"].append([idx[g] for g in path])
+        return out
+
+    real = real_paths(spread) if spread else {}
+    packed = {}
+    for hl, prof in variants.items():
+        sp = graph.spread(prof, a.genre_spread_hops, a.genre_spread_decay)
+        packed[str(hl)] = {"profile": [[idx[g], v] for g, v in prof.items()],
+                           "spread": [[idx[x.genre], x.score, x.hop] for x in sp], "real": real_paths(sp)}
     return {
         "meta": {"nodes": len(names), "edges": n_edges, "learned": graph.learned, "taste": bool(profile),
                  "taste_nodes": len(taste_ids), "taste_edges": len(tedges), "input": nearby_input,
@@ -246,6 +264,7 @@ def build(home: str, export: str | None) -> dict:
         "cfg": dataclasses.asdict(cfg),
         "real": real, "explores": list(EXPLORES), "seeds": list(SEEDS), "realStops": REAL_STOPS,
         "spreadParams": {"hops": a.genre_spread_hops, "decay": a.genre_spread_decay},
+        "variants": packed, "halfLives": sorted(variants, key=lambda h: h or 10**9), "hlDefault": hl_default,
     }
 
 
@@ -375,6 +394,11 @@ button:hover{border-color:var(--muted)}
       <div class="row" style="margin-top:8px"><button id="swap">Swap</button><button id="clr">Clear</button></div>
       <div class="res" id="routeOut"></div>
     </details>
+    <details open id="hlBox"><summary>Taste memory</summary>
+      <p class="sub">How fast old likes fade from the profile: a like this many days older than your newest counts half. Profiles are precomputed for each step.</p>
+      <label class="f">Half-life: <b id="hlv"></b></label>
+      <input type="range" id="hl" min="0" max="0" step="1" value="0">
+    </details>
     <details open id="flowBox"><summary>Flow preview</summary>
       <p class="sub" id="flowNote">Simulates flow mode's genre path (JS port of plan_path).</p>
       <div id="flowCtl">
@@ -461,10 +485,10 @@ E.forEach((e, i) => { ea[i] = e[0]; eb[i] = e[1]; ew[i] = e[2]; ek[i] = e[3]; })
 // ---- taste
 const share = new Float32Array(N), inTaste = new Uint8Array(N);
 D.profile.forEach(([i, s]) => { share[i] = s; inTaste[i] = 1; });
-const topShare = Math.max(...D.profile.map((p) => p[1]), 1e-9);
+let topShare = Math.max(...D.profile.map((p) => p[1]), 1e-9);
 const spreadScore = new Float32Array(N), spreadHop = new Int8Array(N).fill(-1);
 D.spread.forEach(([i, s, h]) => { spreadScore[i] = s; spreadHop[i] = h; });
-const topR = Math.max(...D.spread.map((p) => p[1]), 1e-9);
+let topR = Math.max(...D.spread.map((p) => p[1]), 1e-9);
 const relR = (i) => (spreadHop[i] >= 0 ? spreadScore[i] / topR : 0);
 
 // ---- positions per layout
@@ -545,7 +569,18 @@ function prepSpread() {
   const own = [...f.keys()].filter((g) => f.get(g) > 0).sort((a, b) => (f.get(b) - f.get(a)) || cmpName(a, b));
   return { f, r, own, first: sp.length ? sp[0][0] : null };
 }
-const SP = HAS_TASTE ? prepSpread() : null;
+let SP = HAS_TASTE ? prepSpread() : null;
+// half-life slider: swap in the profile, spread and real paths computed (in python) for that half-life
+function useHalfLife(hl) {
+  const v = D.variants && D.variants[String(hl)]; if (!v) return;
+  D.profile = v.profile; D.spread = v.spread; D.real = v.real;
+  share.fill(0); inTaste.fill(0); D.profile.forEach(([i, s]) => { share[i] = s; inTaste[i] = 1; });
+  topShare = Math.max(...D.profile.map((p) => p[1]), 1e-9);
+  spreadScore.fill(0); spreadHop.fill(-1); D.spread.forEach(([i, s, h]) => { spreadScore[i] = s; spreadHop[i] = h; });
+  topR = Math.max(...D.spread.map((p) => p[1]), 1e-9);
+  for (let e = 0; e < nE; e++) tasteEdge[e] = inTaste[ea[e]] && inTaste[eb[e]] ? 1 : 0;
+  SP = prepSpread();
+}
 
 function choices(items, weights, rnd) {
   let tot = 0; for (const w of weights) tot += w;
@@ -666,9 +701,23 @@ const REAL_COL = ["#0c8599", "#7048e8", "#e67700", "#2b8a3e", "#c2255c", "#1971c
 const GROUP_COL = () => [C.wiki, C.learned, C.yandex];
 
 const visNodes = {}, prio = {}, bounds = {};
+let HL = D.hlDefault;
+const hlText = (hl) => (hl === 0 ? "off (every like counts the same)" : hl >= 365 ? `${(hl / 365).toFixed(hl % 365 ? 1 : 0)} year${hl === 365 ? "" : "s"} (${hl} days)` : `${hl} days`);
+function hlInit() {
+  const el = $("#hl"), list = D.halfLives || [];
+  if (!HAS_TASTE || !list.length) { $("#hlBox").classList.add("hide"); return; }
+  const h = new URLSearchParams(location.hash.slice(1));
+  if (h.has("hl") && list.includes(+h.get("hl"))) HL = +h.get("hl");
+  el.max = list.length - 1; el.value = list.indexOf(HL); $("#hlv").textContent = hlText(HL);
+  if (HL !== D.hlDefault) useHalfLife(HL);
+  el.addEventListener("input", () => {
+    HL = list[+el.value]; $("#hlv").textContent = hlText(HL);
+    useHalfLife(HL); setupModes(); legend(); nwText(); updateSim(); updateRoute(); saveHash(); schedule();
+  });
+}
 function setupModes() {
   const all = Array.from({ length: N }, (_, i) => i);
-  visNodes.data = all; visNodes.blend = all; visNodes.taste = tasteIds;
+  visNodes.data = all; visNodes.blend = all; visNodes.taste = tasteIds.filter((g) => inTaste[g]);
   for (const m of ["data", "blend", "taste"]) {
     const arr = visNodes[m].slice();
     arr.sort((a, b) => {
@@ -1017,6 +1066,7 @@ function saveHash() {
   if (S.showReal) add("real", 1);
   if (+$("#rad").value > 0) add("rad", $("#rad").value);
   if (TH > 0) add("th", TH.toFixed(2)); if (TH_HI < 1) add("thhi", TH_HI.toFixed(2));
+  if (HAS_TASTE && HL !== D.hlDefault) add("hl", HL);
   if (SZ_T !== 1) add("szt", SZ_T); if (SZ_O !== 1) add("szo", SZ_O);
   if (NW_LO > 0) add("nwlo", NW_LO); if (NW_HI < 1) add("nwhi", NW_HI);
   try { history.replaceState(null, "", "#" + q.join("&")); } catch (e) { /* sandboxed */ }
@@ -1194,7 +1244,7 @@ function resize() {
   schedule();
 }
 function init() {
-  readColors(); setupModes(); loadHash();
+  readColors(); hlInit(); setupModes(); loadHash();
   const sub = `${D.meta.nodes} genres, ${D.meta.edges} links` + (D.meta.learned ? ", learned weights" : "") +
     (HAS_TASTE ? ` · taste: ${D.meta.taste_nodes} genres` : " · no taste input");
   $("#sub").textContent = sub;

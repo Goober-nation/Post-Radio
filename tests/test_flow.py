@@ -231,3 +231,25 @@ def test_radio_dry_builds_the_graph_but_picks_no_tracks():
     assert res["hops"][1]["top"][0]["artist"] == "Alpha" and res["hops"][1]["top"][0]["path"] == ["Seed", "Alpha"]
     assert res["max_hops"] == 3 and res["graph_size"] == 4
     r.close()
+
+
+def test_rarity_and_parent_discount_shift_the_profile_to_specific_genres():
+    from postradio.genres import ancestors_of
+    weights = {"A": 1.0, "B": 1.0}
+    mb = {"A": ["hip hop", "alternative hip hop"], "B": ["pop", "k-pop"]}
+    plain = taste_profile(weights, [(mb, 1.0)])
+    assert plain["hip hop"] > plain["alternative hip hop"]  # broad first tag wins without the fixes
+    anc = ancestors_of([("alternative hip hop", "hip hop", "subgenre_of"), ("k-pop", "pop", "subgenre_of"),
+                        ("hip hop", "x", "influenced_by")])
+    assert anc["alternative hip hop"] == {"hip hop"} and not anc.get("hip hop")  # influence isn't parentage
+    parent = taste_profile(weights, [(mb, 1.0)], ancestors=anc, parent_discount=0.3)
+    assert parent["alternative hip hop"] > parent["hip hop"] and parent["k-pop"] > parent["pop"]
+    rare = taste_profile(weights, [(mb, 1.0)], genre_weight={"hip hop": 0.2, "pop": 0.2})
+    assert rare["alternative hip hop"] > rare["hip hop"]
+    assert abs(sum(rare.values()) - 1) < 1e-3
+
+
+def test_ancestors_are_transitive_and_survive_cycles():
+    from postradio.genres import ancestors_of
+    anc = ancestors_of([("c", "b", "subgenre_of"), ("b", "a", "subgenre_of"), ("a", "c", "subgenre_of")])
+    assert anc["c"] >= {"a", "b"} and "c" not in anc["c"]

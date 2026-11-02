@@ -123,10 +123,12 @@ Terms used below:
 
 | key | default | what it does |
 |---|---|---|
-| `flow_half_life_days` | 180 | A like this many days older than the newest counts half |
+| `flow_half_life_days` | 730 | A like this many days older than the newest counts half (0 = no decay). Long by default: a library is years of likes, not a mood |
 | `flow_profile_artists` | 150 | Most-liked artists whose genres make up the profile |
 | `flow_profile_api` | false | With the store installed, also ask the MusicBrainz API for artists the store doesn't know or has no genres for (1–4 s each). Off = store only. |
 | `flow_source_shares` | mb 0.7, yandex 0.3 | Blend of genre sources in the profile; each is normalised on its own first |
+| `flow_genre_rarity` | 1.0 | Profile: weights each genre by how rare it is among artists in the store, `(log(N / artists with it) / log N) ^ this`, so broad tags like pop or hip hop count less than specific ones. 0 = off; needs the store |
+| `flow_parent_discount` | 0.3 | Profile: when an artist has a genre and one of its subgenres (Wikidata "subgenre of"), the broader one counts this much for that artist. 1 = off |
 | `flow_destination_from` | 0.3 | Below this explore, the path only tours your own genres |
 | `flow_destination_reach` | 0.6 | The destination's wanted closeness = `1 − reach × explore`, relative to the closest eligible genre (0.7 at explore 0.5, 0.4 at 1) |
 | `flow_destination_width` | 0.2 | How strictly the destination must match that closeness |

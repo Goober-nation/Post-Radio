@@ -121,12 +121,14 @@ advanced:
   genre_fallback_scale: 0.2
   genre_spread_hops: 2
   genre_spread_decay: 0.5
-  flow_half_life_days: 180.0
+  flow_half_life_days: 730.0
   flow_profile_artists: 150
   flow_profile_api: false
   flow_source_shares:
     mb: 0.7
     yandex: 0.3
+  flow_genre_rarity: 1.0
+  flow_parent_discount: 0.3
   flow_destination_from: 0.3
   flow_destination_width: 0.2
   flow_destination_reach: 0.6

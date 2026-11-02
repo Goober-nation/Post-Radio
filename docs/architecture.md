@@ -89,7 +89,7 @@ all run it; `postradio profile` (`GET /profile`) shows its first step on its own
 
 1. **Likes:** every feedback source's `liked()` gives positive opinions with dates; Yandex dates each
    track by when it was added. Each artist's weight is the sum of its likes, halving every
-   `flow_half_life_days` (180) back from the newest like. The `flow_profile_artists` (150) most-liked
+   `flow_half_life_days` (730) back from the newest like. The `flow_profile_artists` (150) most-liked
    artists go on.
 2. **Profile:** artists are resolved through MusicBrainz. With the store installed this is store-only, so
    no API calls; `flow_profile_api` turns the API fallback back on.

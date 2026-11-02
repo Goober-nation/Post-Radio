@@ -62,18 +62,29 @@ def artist_weights(likes: Iterable[tuple[str, int | None]], half_life_days: floa
     return dict(out)
 
 
-def taste_profile(weights: dict[str, float], genres_by_source: list[tuple[dict[str, list[str]], float]]
-                  ) -> dict[str, float]:
+def taste_profile(weights: dict[str, float], genres_by_source: list[tuple[dict[str, list[str]], float]],
+                  genre_weight: dict[str, float] | None = None, ancestors: dict[str, frozenset[str]] | None = None,
+                  parent_discount: float = 1.0) -> dict[str, float]:
     """{genre: share} summing to 1. Each source maps artist -> genres (strongest first, counting 1/rank) and is
     normalised on its own, then blended by its share, so a fine source (MusicBrainz) refines a coarse one
-    (Yandex album genres) instead of being drowned by it."""
+    (Yandex album genres) instead of being drowned by it.
+
+    genre_weight: per-genre multiplier (rarity: a genre most artists carry counts less than a specific one).
+    ancestors + parent_discount: when an artist's list holds a genre and one of its subgenres, the broader one
+    counts parent_discount as much for that artist ("hip hop" next to "alternative hip hop")."""
     out: Counter = Counter()
     total_share = sum(s for _, s in genres_by_source) or 1.0
     for genres_of, share in genres_by_source:
         c: Counter = Counter()
         for artist, w in weights.items():
-            for i, g in enumerate(genres_of.get(artist) or []):
-                c[g] += w / (i + 1)
+            gs = genres_of.get(artist) or []
+            for i, g in enumerate(gs):
+                v = w / (i + 1)
+                if ancestors and parent_discount != 1 and any(g in ancestors.get(o, ()) for o in gs if o != g):
+                    v *= parent_discount
+                if genre_weight:
+                    v *= genre_weight.get(g, 1.0)
+                c[g] += v
         total = sum(c.values())
         for g, v in c.items():
             out[g] += share / total_share * v / total

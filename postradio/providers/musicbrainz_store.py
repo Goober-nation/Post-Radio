@@ -169,6 +169,15 @@ class ArtistStore:
                 (genre, limit)).fetchall()
         return [(r[0], r[1]) for r in rows]
 
+    def genre_counts(self) -> tuple[dict[str, int], int]:
+        """({genre: artists carrying it}, artists with any genre). Computed once (~1 s on the full store)."""
+        if getattr(self, "_counts", None) is None:
+            with self.lock:
+                rows = self.con.execute("SELECT genre, COUNT(*) FROM artist_genres GROUP BY genre").fetchall()
+                total = self.con.execute("SELECT COUNT(DISTINCT mbid) FROM artist_genres").fetchone()[0]
+            self._counts = ({r[0]: r[1] for r in rows}, total)
+        return self._counts
+
     def known_genres(self) -> set[str]:
         with self.lock:
             return {r[0] for r in self.con.execute("SELECT DISTINCT genre FROM artist_genres")}

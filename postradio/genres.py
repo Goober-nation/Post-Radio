@@ -13,7 +13,7 @@ import json
 import math
 from collections import Counter, defaultdict
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from itertools import combinations
 from pathlib import Path
@@ -174,6 +174,7 @@ class GenreGraph:
     nodes: dict[str, GenreNode]
     adj: Adjacency
     learned: bool  # True when genre_weights.json carried the ranking
+    ancestors: dict[str, frozenset[str]] = field(default_factory=dict)  # Wikidata "subgenre of", transitively
 
     def related(self, genre: str) -> dict[str, float]:
         return self.adj.get(genre, {})
@@ -216,8 +217,31 @@ def _load(graph_path: Path, _g_stamp, weights: Path | None, w_stamp, yandex_json
         edges += [e for e in yandex_edges(json.loads(yandex_json)) if e[0] in nodes and e[1] in nodes]
     kind_weights = dict(kinds)
     if not w_stamp:
-        return GenreGraph(nodes, neighbours(edges, kind_weights), learned=False)
+        return GenreGraph(nodes, neighbours(edges, kind_weights), learned=False, ancestors=ancestors_of(edges))
     w = json.loads(weights.read_text())
     layers = [{pair(*k.split("|", 1)): v for k, v in (w.get(name) or {}).items()} for name in ("cotag", "similar")]
     return GenreGraph(nodes, from_pairs(combine(layers, structural(edges, kind_weights), fallback_scale)),
-                      learned=True)
+                      learned=True, ancestors=ancestors_of(edges))
+
+
+def ancestors_of(edges: Iterable[tuple[str, str, str]]) -> dict[str, frozenset[str]]:
+    """genre -> every genre it is a subgenre of, directly or through others (Wikidata subgenre_of edges)."""
+    parents: dict[str, set[str]] = defaultdict(set)
+    for src, dst, kind in edges:
+        if kind == "subgenre_of" and src != dst:
+            parents[src].add(dst)
+    out: dict[str, frozenset[str]] = {}
+
+    def walk(g: str, seen: frozenset[str]) -> frozenset[str]:
+        if g in out:
+            return out[g]
+        acc: set[str] = set()
+        for p in parents.get(g, ()):
+            if p not in seen:
+                acc |= {p} | walk(p, seen | {g})
+        out[g] = frozenset(acc)
+        return out[g]
+
+    for g in list(parents):
+        walk(g, frozenset())
+    return out

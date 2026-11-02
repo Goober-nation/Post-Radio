@@ -156,13 +156,15 @@ class Advanced:
     genre_spread_hops: int = 2  # a taste profile spreads this many hops over the genre graph...
     genre_spread_decay: float = 0.5  # ...losing this factor per hop (times the edge weight)
     # flow mode (postradio/flow.py)
-    flow_half_life_days: float = 180.0  # taste profile: a like this old counts half as much as the newest
+    flow_half_life_days: float = 730.0  # taste profile: a like this old counts half as much as the newest
     flow_profile_artists: int = 150  # artists whose genres are looked up for the profile (most-liked first)
     flow_profile_api: bool = False  # with the store installed, also ask the MusicBrainz API (1-4 s each) for artists
     #   the store doesn't know or has no genres for; off = store only (Yandex genres still cover them)
     flow_source_shares: dict[str, float] = field(default_factory=lambda: {
         "mb": 0.7,  # MusicBrainz artist genres (store first, then the API)
         "yandex": 0.3})  # Yandex album genres of the liked tracks
+    flow_genre_rarity: float = 1.0  # profile: weight genres by rarity among artists (store); 0 = off
+    flow_parent_discount: float = 0.3  # profile: a genre next to one of its subgenres counts this much; 1 = off
     flow_destination_from: float = 0.3  # below this explore, the path only tours the user's own genres
     flow_destination_width: float = 0.2  # how closely the destination must match the closeness explore asks for
     flow_destination_reach: float = 0.6  # wanted closeness of the destination = 1 - reach * explore
