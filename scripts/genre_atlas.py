@@ -341,6 +341,14 @@ button:hover{border-color:var(--muted)}
 .res{font-size:12px;margin-top:6px}.res .m{color:var(--muted)}
 .pl{margin:3px 0;font-size:12px}.pl i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px}
 .hide{display:none!important}
+.dual{position:relative;height:26px}
+.dual input{position:absolute;left:0;top:4px;width:100%;margin:0;background:none;pointer-events:none;-webkit-appearance:none;appearance:none}
+.dual input::-webkit-slider-runnable-track{height:4px;background:var(--line);border-radius:2px}
+.dual input::-moz-range-track{height:4px;background:var(--line);border-radius:2px}
+.dual input::-webkit-slider-thumb{pointer-events:auto;-webkit-appearance:none;width:16px;height:16px;border-radius:50%;background:var(--accent);margin-top:-6px;cursor:pointer;border:2px solid var(--panel)}
+.dual input::-moz-range-thumb{pointer-events:auto;width:14px;height:14px;border-radius:50%;background:var(--accent);cursor:pointer;border:2px solid var(--panel)}
+.dual input+input::-webkit-slider-runnable-track{background:transparent}
+.dual input+input::-moz-range-track{background:transparent}
 @media (max-width:760px){
   #app{grid-template-columns:1fr}
   #side{position:absolute;left:0;right:0;bottom:0;max-height:58dvh;border-right:0;border-top:1px solid var(--line);
@@ -386,6 +394,11 @@ button:hover{border-color:var(--muted)}
       <p class="sub">Links weaker than this are ignored by routes, the flow preview and the drawing. (Your taste spread and the real paths were computed on the full graph.)</p>
       <label class="f">Minimum weight: <b id="thv">0.00</b> <span class="m" id="thn"></span></label>
       <input type="range" id="th" min="0" max="0.6" step="0.01" value="0">
+    </details>
+    <details open><summary>Show genres by weight</summary>
+      <p class="sub">Hides genres outside the range (display only; routes and flow still use them). Weight: your genres = &radic;(share &divide; top share); other genres = log(1 + links) &divide; log(1 + most links).</p>
+      <label class="f">Weight <b id="nwv">0.00 – 1.00</b> <span class="m" id="nwn"></span></label>
+      <div class="dual"><input type="range" id="nwLo" min="0" max="1" step="0.01" value="0"><input type="range" id="nwHi" min="0" max="1" step="0.01" value="1"></div>
     </details>
     <details open><summary>Dot size</summary>
       <p class="sub">Your genres: by taste share. Other genres: by number of links (in Blend, plus closeness to your taste). Both grow with zoom.</p>
@@ -658,6 +671,11 @@ const schedule = () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; 
 // dot sizes: your genres by taste share, other genres by number of links (+ closeness to your taste in Blend);
 // both grow with sqrt(zoom). SZ_T / SZ_O are the sidebar multipliers.
 let SZ_T = 1, SZ_O = 1;
+// node weight 0..1 for the show/hide range: your genres sqrt(share / top share), others log(1 + links) / log(1 + most)
+let NW_LO = 0, NW_HI = 1;
+const maxDeg0 = Math.max(...D.nb.map((l) => l.length), 1);
+const nodeW = (g) => (S.mode !== "data" && inTaste[g] ? Math.sqrt(share[g] / topShare) : Math.log1p(D.nb[g].length) / Math.log1p(maxDeg0));
+const shown = (g) => { const w = nodeW(g); return w >= NW_LO - 1e-9 && w <= NW_HI + 1e-9; };
 function nodeR(g) {
   const z = Math.min(Math.max(Math.sqrt(zoomRel()), 0.75), 4.5);
   if (S.mode === "taste" || (S.mode === "blend" && inTaste[g])) return (3.2 + 34 * Math.sqrt(share[g])) * (S.mode === "taste" ? 1 : 0.8) * z * SZ_T;
@@ -685,6 +703,7 @@ function bucketOf(w) { for (let i = 0; i < buckets.length; i++) if (w < buckets[
 function visibleEdge(e, P_, x0, y0, x1, y1) {
   const ax = P_[2 * ea[e]], ay = P_[2 * ea[e] + 1], bx = P_[2 * eb[e]], by = P_[2 * eb[e] + 1];
   if (ax !== ax || bx !== bx) return false;
+  if (!shown(ea[e]) || !shown(eb[e])) return false;
   return !((ax < x0 && bx < x0) || (ax > x1 && bx > x1) || (ay < y0 && by < y0) || (ay > y1 && by > y1));
 }
 function drawEdges() {
@@ -724,7 +743,7 @@ function drawNodes() {
   const P_ = P(), m = S.mode, vis = visNodes[m];
   if (m === "blend") { // faint spread halo
     ctx.fillStyle = C.spread;
-    for (const g of vis) { const r = relR(g); if (r <= 0 || inTaste[g]) continue;
+    for (const g of vis) { const r = relR(g); if (r <= 0 || inTaste[g] || !shown(g)) continue;
       const x = P_[2 * g] * view.k + view.x, y = P_[2 * g + 1] * view.k + view.y;
       if (x < -40 || y < -40 || x > W + 40 || y > H + 40) continue;
       ctx.globalAlpha = 0.07 + 0.22 * r; ctx.beginPath(); ctx.arc(x, y, (5 + 22 * r) * Math.sqrt(zoomRel()), 0, 6.2832); ctx.fill(); }
@@ -733,6 +752,7 @@ function drawNodes() {
   const order = m === "data" ? vis : prio[m].order.slice().reverse(); // big/important on top
   ctx.strokeStyle = C.halo; ctx.lineWidth = 1;
   for (const g of order) {
+    if (!shown(g)) continue;
     const x = P_[2 * g] * view.k + view.x, y = P_[2 * g + 1] * view.k + view.y;
     if (x < -30 || y < -30 || x > W + 30 || y > H + 30) continue;
     const r = nodeR(g);
@@ -798,7 +818,7 @@ function drawLabels(forced) {
   if (S.sel >= 0) extra.add(S.sel);
   for (const g of [S.from, S.to]) if (g >= 0) extra.add(g);
   for (const g of extra) want.push(g);
-  for (let r = 0; r < order.length && r < budget + 4; r++) { const g = order[r]; if (r < budget && !extra.has(g)) want.push(g); }
+  for (let r = 0, k = 0; r < order.length && k < budget; r++) { const g = order[r]; if (!shown(g) || extra.has(g)) continue; want.push(g); k++; }
   const fs = m === "taste" ? 12 : 11;
   for (const g of want) {
     const p = P_[2 * g]; if (p !== p) continue;
@@ -855,6 +875,7 @@ function draw() {
 function hit(mx, my) {
   const P_ = P(); let best = -1, bd = 1e9;
   for (const g of visNodes[S.mode]) {
+    if (!shown(g)) continue;
     const x = P_[2 * g] * view.k + view.x - mx, y = P_[2 * g + 1] * view.k + view.y - my, d = Math.hypot(x, y) - nodeR(g);
     if (d < 4 && d < bd) { bd = d; best = g; }
   }
@@ -959,6 +980,7 @@ function saveHash() {
   if (S.showReal) add("real", 1);
   if (TH > 0) add("th", TH.toFixed(2));
   if (SZ_T !== 1) add("szt", SZ_T); if (SZ_O !== 1) add("szo", SZ_O);
+  if (NW_LO > 0) add("nwlo", NW_LO); if (NW_HI < 1) add("nwhi", NW_HI);
   try { history.replaceState(null, "", "#" + q.join("&")); } catch (e) { /* sandboxed */ }
 }
 function loadHash() {
@@ -970,6 +992,8 @@ function loadHash() {
   if (g("to") >= 0) { S.to = g("to"); $("#to").value = labels[S.to]; }
   if (g("start") >= 0) { S.start = g("start"); $("#start").value = labels[S.start]; }
   if (h.get("th")) { TH = Math.min(Math.max(+h.get("th") || 0, 0), 0.6); $("#th").value = TH; applyTh(); }
+  if (h.get("nwlo")) { NW_LO = Math.min(Math.max(+h.get("nwlo") || 0, 0), 1); $("#nwLo").value = NW_LO; }
+  if (h.get("nwhi")) { NW_HI = Math.min(Math.max(+h.get("nwhi") || 1, 0), 1); $("#nwHi").value = NW_HI; }
   for (const [k, id] of [["szt", "szT"], ["szo", "szO"]]) if (h.get(k)) { const v = Math.min(Math.max(+h.get(k) || 1, 0.2), 3);
     $("#" + id).value = v; if (k === "szt") SZ_T = v; else SZ_O = v; $("#" + id + "v").textContent = v.toFixed(1); }
   if (h.get("real")) { S.showReal = true; $("#showReal").checked = true; }
@@ -1068,6 +1092,16 @@ function thText() {
   const [ka] = keptEdges();
   $("#thv").textContent = TH.toFixed(2); $("#thn").textContent = `(${ka} of ${nE} links kept)`;
 }
+function nwText() {
+  const vis = visNodes[S.mode] || [];
+  $("#nwv").textContent = `${NW_LO.toFixed(2)} – ${NW_HI.toFixed(2)}`;
+  $("#nwn").textContent = `(${vis.filter(shown).length} of ${vis.length} shown)`;
+}
+for (const id of ["nwLo", "nwHi"]) $("#" + id).addEventListener("input", () => {
+  let lo = +$("#nwLo").value, hi = +$("#nwHi").value;
+  if (lo > hi) { if (id === "nwLo") { lo = hi; $("#nwLo").value = lo; } else { hi = lo; $("#nwHi").value = hi; } }
+  NW_LO = lo; NW_HI = hi; nwText(); saveHash(); schedule();
+});
 for (const id of ["szT", "szO"]) $("#" + id).addEventListener("input", () => {
   const v = +$("#" + id).value; if (id === "szT") SZ_T = v; else SZ_O = v;
   $("#" + id + "v").textContent = v.toFixed(1); saveHash(); schedule();
@@ -1084,7 +1118,7 @@ function setMode(m) {
   S.mode = m; S.hover = -1; showTip(-1);
   document.querySelectorAll("#modes button").forEach((b) => b.classList.toggle("on", b.dataset.m === m));
   if (m === "taste") { for (const k of ["from", "to"]) if (S[k] >= 0 && !inTaste[S[k]]) { S[k] = -1; $("#" + k).value = ""; } if (S.sel >= 0 && !inTaste[S.sel]) S.sel = -1; }
-  fitView(); updateRoute(); legend(); saveHash(); schedule();
+  fitView(); updateRoute(); legend(); nwText(); saveHash(); schedule();
 }
 function legend() {
   const m = S.mode, L = [];
@@ -1123,7 +1157,7 @@ function init() {
   document.querySelectorAll("#modes button").forEach((b) => { b.classList.toggle("on", b.dataset.m === S.mode); b.onclick = () => { if (!b.disabled) setMode(b.dataset.m); }; });
   $("#panelBtn").onclick = () => $("#side").classList.toggle("open");
   matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { readColors(); legend(); schedule(); });
-  thText(); legend(); updateSim(); updateRoute();
+  thText(); nwText(); legend(); updateSim(); updateRoute();
   new ResizeObserver(resize).observe(cv); resize();
 }
 window.__atlas = { D, view, S, adj, routeBetween, fit, planPath, simulate, verifyPath, P, names, idx, hit, fitView, setMode, zoomRel,
