@@ -53,3 +53,23 @@ path was traced, not executed.
 - `api.save` path traversal blocked by `slug()`; `import_dump` streams the tar and reads only `mbdump/artist`;
   Yandex URL regexes are anchored to Yandex hosts.
 - No tokens, server addresses or personal paths in docs/, scripts/, tests/.
+
+## From the project map
+
+Found while mapping the code (project map run, same day). Not fixed.
+
+- `Recommender.data_fetch` closes `self.store`, but the radio's MusicBrainz provider keeps the closed `ArtistStore`;
+  later calls on the same instance degrade silently through `_safe`.
+- `with_config` doesn't pass `home`, so relative config paths (`_base`) can differ in the copy.
+- `flow()` and `Params` accept `taste`, `unheard` and `mix`, but flow ignores them (flow always drops heard tracks);
+  the CLI and HTTP flow have no such options.
+- `PlannerConfig` (candidates 4, floor 0.05) is hard-coded, not in `Advanced`.
+- Stream names live in three places (`config.STREAMS`, `Advanced.mix`, CLI `--mix` help); `Radio._cut` only warns on
+  an unknown stream, and `Radio.view()` builds a new `Radio` per call, so that warning repeats.
+- The LB API base URL is duplicated in four provider files.
+- The "exactly one seed kind" check is written three times (`/radio` handler, `_check_radio`, `Recommender.generate` /
+  `Radio.resolve_seeds`).
+- `n <= 500` is capped only in the HTTP models; the library and CLI have no upper bound.
+- `ArtistStore` and `GenreIndex` share an informal interface (`genre_artists`, `known_genres`) without an ABC.
+- `providers/yandex.py` imports the private `history._timestamp`.
+- `validate()` docstring says ValueError; it raises `ConfigError` (a ValueError subclass).
