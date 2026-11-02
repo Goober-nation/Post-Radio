@@ -5,3 +5,5 @@ __pycache__/
 /data/
 /dist/
 /e2e-runs/
+build/
+*.egg-info/
